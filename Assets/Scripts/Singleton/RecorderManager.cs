@@ -9,14 +9,14 @@ using UnityEngine;
 //Recording 앱의 설정값을 관리합니다.
 public class RecorderManager : OSY.Singleton<RecorderManager>
 {
-    public List<ScreenRecorder> screenRecorders;
+    [ReadOnly(false)] public List<ScreenRecorder> screenRecorders;
     public int OptionCaptureTargetFramerate { get; private set; }//FPS
     public int OptionTimescale { get; private set; }
     public bool OptionIsDebug { get; private set; }
     public int OptionFrameChunkSize { get; private set; }
 
-    public int capturingRecorderCount;
-    public int capturingEndRecorderCount;
+    [ReadOnly(false)] public int capturingRecorderCount;
+    [ReadOnly(false)] public int capturingEndRecorderCount;
 
     protected override void Awake()
     {
