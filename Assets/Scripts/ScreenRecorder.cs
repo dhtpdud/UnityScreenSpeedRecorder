@@ -1,290 +1,91 @@
-using System.Collections;
-using System.Diagnostics;
+using Cysharp.Threading.Tasks;
+using OSY;
 using UnityEngine;
-//using OpenCVForUnity.CoreModule;
-using System.Collections.Generic;
-using Application = UnityEngine.Application;
-using Directory = System.IO.Directory;
-using File = System.IO.File;
-using System;
-using UnityEngine.UI;
-using Debug = UnityEngine.Debug;
-using UnityEngine.Scripting; // °¡ºñÁö ÄÃ·¢ÅÍ ¿ëÀÌ´Ï±î Áö¿ìÁö ¸»°Í
-using UnityEngine.Profiling;
-using System.Threading;
 
+//targetFrameCountë§Œí¼ í™”ë©´ì„ ìº¡ì³í•˜ë©°, ìº¡ì³í•œ í”„ë ˆì„ë“¤ì€ capturedFrames Queueì— ìºì‹±í•©ë‹ˆë‹¤.
+//ì´í›„ ìºì‹±ëœ í”„ë ˆì„ë“¤ì€ RecorderFlusherì— ì˜í•´ .pngíŒŒì¼ë¡œ ì €ì¥ë©ë‹ˆë‹¤.
 public class ScreenRecorder : MonoBehaviour
 {
-    [Header("Options")]
-    [SerializeField]
-    private int recordingSec = 30;
-    public string RecordingSec
+    [SerializeField, ReadOnly(false)] private bool isCapturing;
+    public bool IsCapturing { get => isCapturing; }
+    public new Camera camera = null;                                        //ì¹´ë©”ë¼
+    [SerializeField] private int targetFrameCount = -1;                     //ëª©í‘œ ìº¡ì³ í”„ë ˆì„ ìˆ˜
+    [SerializeField, ReadOnly(false)] private int capturedFrameCount;       //í˜„ì¬ ìº¡ì³í•œ í”„ë ˆì„ ìˆ˜
+    [SerializeField] private string saveDirPath;                            //ìºì‹±í•œ í”„ë ˆì„ë“¤ì´ ë§ˆì§€ë§‰ì— ì €ì¥ë  ê²½ë¡œ
+    [SerializeField] private string outputImageExtension = ".png";          //ì €ì¥ë  í”„ë ˆì„ì˜ ì´ë¯¸ì§€ í™•ì¥ì
+    private ManageableQueue<FrameInfo> capturedFrames                       //ìº¡ì³í•œ í”„ë ˆì„ë“¤ì„ ìºì‹±í•´ë‘˜ Queue
     {
-        set
-        {
-            recordingSec = int.Parse(value);
-        }
-    }
-    [SerializeField]
-    private int captureFrameRate = 30;
-    public string CaptureFrameRate
-    {
-        set
-        {
-            captureFrameRate = int.Parse(value);
-        }
-    }
-    [SerializeField]
-    private float gameSpeed = 30;
-    public string GameSpeed
-    {
-        set
-        {
-            gameSpeed = float.Parse(value);
-        }
-    }
-    public bool VSyncEnable
-    {
-        set
-        {
-            QualitySettings.vSyncCount = value ? originVSyncCount : 0;
-        }
-    }
-    [SerializeField]
-    private string directoryPath = "FrameCaptures";
-    public string DirectoryPath
-    {
-        get => directoryPath;
-        set
-        {
-            directoryPath = value;
-        }
+        get => RecorderFlusher.Instance.CapturedFrames;
     }
 
-
-    [Header("UI")]
     [SerializeField]
-    Canvas canvas;
-    [SerializeField]
-    private Text textTimer;
-    [SerializeField]
-    private Text textCounter;
-    [SerializeField]
-    private Text textFPS;
-
-    private int counterIndex = 1;
-
-    private Camera mainCam = null;
-    private int ScreenWidth = Screen.width;
-    private int ScreenHeight = Screen.height;
-    private Rect screenRect;
-
-
-    //Ä³½Ì¿ë º¯¼ö ¸ğÀ½
-    private int originVSyncCount;
-    private int originTargetFrameRate;
-
-    private float deltatimeCache;
-    private float lastFPS;
-
-    private IEnumerator updateRoutine;
-    private IEnumerator recordingRoutine;
-    private IEnumerator encodingRoutine;
-    private YieldInstruction yieldCacheWaitUpdate = new WaitForEndOfFrame();
-
-    private Stopwatch bechmarkWatch = new Stopwatch();
+    private Canvas canvas;                                              //ë¡œê·¸ë¥¼ ìœ„í•œ ìº”ë²„ìŠ¤
 
     private void Awake()
     {
-        originVSyncCount = QualitySettings.vSyncCount;
-        mainCam = Camera.main;
-        canvas.worldCamera = mainCam;
-    }
-    private void Update()
-    {
-        deltatimeCache = Time.deltaTime;
-        textFPS.text = string.Format("{0:N1} FPS", lastFPS = 1.0f / deltatimeCache);
-    }
-    IEnumerator RecordingUpdateRoutine()
-    {
-        float recordingTime = 0;
-        counterIndex = 1;
-        while (true)
+        var tokenCreate = destroyCancellationToken;
+        camera ??= GetComponent<Camera>();
+        camera.backgroundColor = Color.clear;
+
+        canvas ??= transform.parent.GetComponentInChildren<Canvas>();
+        if (canvas != null)
         {
-            textTimer.text = $"{recordingTime += deltatimeCache}ÃÊ";
-            textCounter.text = counterIndex++.ToString();
-            yield return yieldCacheWaitUpdate;
+            //Overlay CanvasëŠ” RenderTextureë¥¼ í†µí•´ ìº¡ì³ë˜ì§€ ì•ŠìŒ
+            //ë”°ë¼ì„œ Canvas renderModeëª¨ë“œë¥¼ ScreenSpaceCameraë¡œ ë³€ê²½
+            canvas.renderMode = RenderMode.ScreenSpaceCamera;
+            canvas.planeDistance = 0.01f;
+            canvas.worldCamera = camera;
         }
     }
-
-    //Record ¹öÆ° Å¬¸¯½Ã È£Ãâ
-    public void ToggleRecord()
+    public void InitRecorderSetting(int targetFrameCount, string saveDirPath, string imageExtension = ".png")
     {
-        if (recordingRoutine != null)
+        if (targetFrameCount < 0)
         {
-            Debug.Log("³ìÈ­ Áß´Ü");
-            StopCoroutine(recordingRoutine);
-            recordingRoutine = null;
             return;
         }
-        if (encodingRoutine != null)
+        if (saveDirPath == null || saveDirPath.Equals(OSYUtils.EmptyString))
         {
-            Debug.Log("ÀÎÄÚµù Áß´Ü");
-            StopCoroutine(encodingRoutine);
-            encodingRoutine = null;
-            return;
-        }
-        directoryPath = $"{directoryPath}\\{recordingSec}s_{captureFrameRate}fps_{gameSpeed}x";
-
-        if (string.IsNullOrEmpty(directoryPath))
-        {
-            Debug.Log("Àß¸øµÈ °æ·Î");
+            Debug.LogError("ì €ì¥ ê²½ë¡œ ì§€ì • ì•ˆë¨");
             return;
         }
 
-        if (!Directory.Exists(directoryPath))
-        {
-            Debug.Log("Æú´õ »ı¼º");
-            Directory.CreateDirectory(directoryPath);
-        }
-
-        screenRect = new Rect(0, 0, ScreenWidth, ScreenHeight);
-
-        //³ìÈ­ ½ÃÀÛ
-        StartCoroutine(recordingRoutine = RecordingRoutine());
+        this.targetFrameCount = targetFrameCount;
+        capturedFrameCount = 0;
+        this.saveDirPath = saveDirPath;
+        this.outputImageExtension = imageExtension;
     }
-
-    IEnumerator RecordingRoutine()
+    public async UniTask CaptureFramesTask()
     {
-        //ÃÊ±â°ª ¼¼ÆÃ
-        originTargetFrameRate = Application.targetFrameRate;
-        Application.targetFrameRate = (int)(captureFrameRate * gameSpeed);
-        QualitySettings.vSyncCount = 0;
-        Time.timeScale = 0;
-
-        //¿À¹ö·¹ÀÌ Canvas´Â RenderTexture¸¦ ÅëÇØ Ä¸ÃÄµÇÁö ¾ÊÀ½
-        //µû¶ó¼­ Canvas renderMode¸ğµå¸¦ ScreenSpaceCamera·Î º¯°æ
-        canvas.renderMode = RenderMode.ScreenSpaceCamera;
-        canvas.planeDistance = 0.4f;
-
-        bechmarkWatch.Reset();
-        bechmarkWatch.Start();
-
-        List<RenderTexture> capturedFrames = new List<RenderTexture>();
-
-        //targetFrameRate º¯°æ¿¡ µû¸¥ fps ºÒ¾ÈÁ¤ ½Ã°£
-        yield return new WaitForSecondsRealtime(0.1f);
-
-        StartCoroutine(updateRoutine = RecordingUpdateRoutine());
-
-        //GC ½ºÆÄÀÌÅ© ¹æÁö
-#if !UNITY_EDITOR
-        GarbageCollector.GCMode = GarbageCollector.Mode.Manual;
-#endif
-
-        Time.timeScale = gameSpeed;
-
-        //¾ÈÀüÀ» À§ÇØ Vram ÇÑ°è¼±Àº 70%·Î...(¿øÇÑ´Ù¸é Á¶Àı°¡´É)
-        long limitVRamSize = (long)(SystemInfo.graphicsMemorySize * 0.7f);
-
-        //ÇÁ·¹ÀÓ Ä³½Ì
-        for (int i = 0; i < recordingSec * captureFrameRate; i++)
+        Debug.Log("Capturing ì‹œì‘");
+        lock (RecorderFlusher.Instance)
+            RecorderManager.Instance.capturingRecorderCount++;
+        try
         {
-            mainCam.targetTexture = new RenderTexture(ScreenWidth, ScreenHeight, 16);
-            capturedFrames.Add(mainCam.targetTexture);
-
-            //VRam °ü¸®
-            //VRamÀÌ 70%ÀÌ»ó °¡µæÂ÷¸é ÀÎÄÚµù ½ÃÀÛ
-            if (Profiler.GetAllocatedMemoryForGraphicsDriver() / 1000000 >= limitVRamSize)
+            await UniTask.SwitchToMainThread();
+            isCapturing = true;
+            camera.enabled = true;
+            //1. ëª¨ë“  í”„ë ˆì„ ìº¡ì³ í›„, capturedFrames(Queue)ì— ì´¬ì˜ëœ í”„ë ˆì„(RenderTexture) ì €ì¥
+            while (capturedFrameCount < targetFrameCount)
             {
-                Debug.Log("¸Ş¸ğ¸® °¡µæÂü, Áß°£ ÀÎÄÚµù ½ÃÀÛ");
-                yield return encodingRoutine = EncodingRoutine(capturedFrames);
-                Debug.Log("Áß°£ ÀÎÄÚµù ¿Ï·á");
+                await OSYUtils.WaitUntil(() => !capturedFrames.isLock, OSYUtils.YieldCaches.UniTaskYield, destroyCancellationToken);
+                RenderTexture frame = new RenderTexture(GameManager.Instance.ScreenWidth, GameManager.Instance.ScreenHeight, 16);
+                camera.targetTexture = frame;
+                camera.Render();
+                capturedFrames.queue.Enqueue(new FrameInfo(frame, saveDirPath + $"{capturedFrameCount++}".PadLeft(4, '0') + outputImageExtension));
+                await OSYUtils.YieldCaches.UniTaskYield;
             }
-
-            yield return yieldCacheWaitUpdate;
         }
-        bechmarkWatch.Stop();
-        Debug.Log($"ÃÔ¿µ ½Ã°£: {bechmarkWatch.ElapsedMilliseconds / 1000f}ÃÊ");
-
-        StopCoroutine(updateRoutine);
-        updateRoutine = null;
-        recordingRoutine = null;
-
-        //Ä³½ÌµÈ ÇÁ·¹ÀÓ ÀÎÄÚµù + ÆÄÀÏ ÀúÀå ½ÃÀÛ
-        yield return encodingRoutine = EncodingRoutine(capturedFrames);
-    }
-
-    IEnumerator EncodingRoutine(List<RenderTexture> capturedFrame)
-    {
-#if !UNITY_EDITOR
-        GarbageCollector.GCMode = GarbageCollector.Mode.Enabled;
-#endif
-
-        Time.timeScale = 0;
-        mainCam.targetTexture = null;
-        canvas.renderMode = RenderMode.ScreenSpaceOverlay;
-
-        GC.Collect();
-        Resources.UnloadUnusedAssets();
-
-        bechmarkWatch.Reset();
-        bechmarkWatch.Start();
-
-        //ÀÎÄÚµù ½ÃÀÛ
-        //GPUÀÇ ÇÑ°è¸¦ ÃÖ´ëÇÑ ²ø¾î ¿Ã¸± ¼ö ÀÖµµ·Ï Ä«¸Ş¶ó OFF
-        mainCam.enabled = false;
-        for (int i = 0; i < capturedFrame.Count; i++)
+        finally
         {
-            EncodeImage(i, capturedFrame[i], directoryPath);
-            yield return yieldCacheWaitUpdate;
+            camera.targetTexture = null;
+            camera.enabled = false;
+            isCapturing = false;
+            Debug.Log("Capturing ë");
+            lock (RecorderFlusher.Instance)
+            {
+                RecorderManager.Instance.capturingRecorderCount--;
+                RecorderManager.Instance.capturingEndRecorderCount++;
+            }
         }
-        bechmarkWatch.Stop();
-        Debug.Log($"ÀÎÄÚµù ½Ã°£: {bechmarkWatch.ElapsedMilliseconds / 1000f}ÃÊ");
-
-
-        //ÀÎÄÚµù ¿Ï·á
-        //¸Ş¸ğ¸® ÇØÁ¦, ¼¼ÆÃ°ª ÃÊ±âÈ­
-        mainCam.enabled = true;
-
-        Time.timeScale = 1;
-        Application.targetFrameRate = originTargetFrameRate;
-        QualitySettings.vSyncCount = originVSyncCount;
-
-        capturedFrame.Clear();
-        Resources.UnloadUnusedAssets();
-        encodingRoutine = null;
-    }
-
-    void EncodeImage(int currentCount, RenderTexture frame, string directoryPath)
-    {
-        Texture2D convertedFrame = ConvertToTexture2D(frame);
-
-        // Texture PNG bytes·Î ÀÎÄÚµù.
-        // GPU º´¸ñ±¸°£
-        byte[] texturePNGBytes = convertedFrame.EncodeToPNG();
-        string filePath = $"{directoryPath}\\{currentCount + 1}.png";
-
-        //OpenCVÅ×½ºÆ®
-        /*OpenCVForUnity.UnityUtils.Utils.texture2DToMat(texture2D, mat);
-        OpenCVForUnity.ImgcodecsModule.Imgcodecs.imwrite(filePath, mat);*/
-
-
-        //¸ÖÆ¼½º·¹µå ¹Ì»ç¿ë Ãâ·Â 3.5ÃÊ ¡æ ¸ÖÆ¼½º·¹µå »ç¿ë Ãâ·Â 3ÃÊ, ¾à 14.2% ¼º´É Çâ»ó
-        //(i7 - 13¼¼´ë ±âÁØ)
-        Thread thread = new Thread(new ThreadStart(() => File.WriteAllBytes(filePath, texturePNGBytes)));
-        thread.Start();
-    }
-
-    Texture2D ConvertToTexture2D(RenderTexture rTex)
-    {
-        // TextureFormat¿¡¼­ RGB24 ´Â ¾ËÆÄ°¡ Á¸ÀçÇÏÁö ¾Ê´Â´Ù.
-        Texture2D tex = new Texture2D(ScreenWidth, ScreenHeight, TextureFormat.RGB24, true);
-        RenderTexture.active = rTex;
-
-        // GPU º´¸ñ±¸°£
-        tex.ReadPixels(screenRect, 0, 0);
-        tex.Apply();
-        return tex;
     }
 }
