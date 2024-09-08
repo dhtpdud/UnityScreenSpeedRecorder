@@ -107,6 +107,7 @@ public class RecorderManager : OSY.Singleton<RecorderManager>
                 UnityEngine.Scripting.GarbageCollector.GCMode = UnityEngine.Scripting.GarbageCollector.Mode.Enabled;
 #endif
         GameManager.Instance.mainCam.enabled = true;
+        QualitySettings.vSyncCount = 1;
         Application.targetFrameRate = GameManager.Instance.originTargetFramerate;
         Time.captureFramerate = GameManager.Instance.origincaptureFramerate;
         QualitySettings.vSyncCount = GameManager.Instance.originVSyncCount;

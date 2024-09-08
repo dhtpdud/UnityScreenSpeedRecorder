@@ -27,7 +27,6 @@ public class ScreenRecorder : MonoBehaviour
         camera ??= GetComponent<Camera>();
         camera.backgroundColor = Color.clear;
 
-        canvas ??= transform.parent.GetComponentInChildren<Canvas>();
         if (canvas != null)
         {
             //Overlay Canvas는 RenderTexture를 통해 캡쳐되지 않음

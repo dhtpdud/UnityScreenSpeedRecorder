@@ -45,7 +45,6 @@ public class GameManager : Singleton<GameManager>
     {
         base.Awake();
         Time.timeScale = 1;
-        Application.targetFrameRate = -1;
         Screen.SetResolution(ScreenWidth, ScreenHeight, false);
         ScreenRect = new Rect(0, 0, ScreenWidth, ScreenHeight);
         Profiler.maxUsedMemory = 2000000000;//2GB

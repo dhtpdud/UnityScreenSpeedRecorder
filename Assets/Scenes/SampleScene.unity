@@ -274,7 +274,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   isCapturing: 0
   camera: {fileID: 330585545}
-  targetFrameCount: 1300
+  targetFrameCount: 300
   capturedFrameCount: 0
   saveDirPath: F:\Desktop\Output\1\
   outputImageExtension: .png
@@ -682,7 +682,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   isCapturing: 0
   camera: {fileID: 1365609929}
-  targetFrameCount: 1389
+  targetFrameCount: 500
   capturedFrameCount: 0
   saveDirPath: F:\Desktop\Output\2\
   outputImageExtension: .png
