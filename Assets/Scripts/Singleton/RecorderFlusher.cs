@@ -10,7 +10,7 @@ using UnityEngine;
 using UnityEngine.Experimental.Rendering;
 using Debug = UnityEngine.Debug;
 
-//capturedFrames Queue에 캐싱되어 있는 프레임 데이터 들을 .png 파일로 컴파일하여 저장합니다.
+//capturedFrames Queue에 캐싱되어 있는 프레임 데이터 들을 .png 파일로 인코딩하여 저장합니다.
 public class RecorderFlusher : OSY.Singleton<RecorderFlusher>
 {
     [SerializeField, ReadOnly(false)]
