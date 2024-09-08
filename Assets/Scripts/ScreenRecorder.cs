@@ -83,7 +83,7 @@ public class ScreenRecorder : MonoBehaviour
             lock (RecorderFlusher.Instance)
             {
                 RecorderManager.Instance.capturingRecorderCount--;
-                RecorderManager.Instance.capturingEndRecorderCount++;
+                RecorderManager.Instance.flushDestinationQueue.Enqueue(saveDirPath);
             }
         }
     }

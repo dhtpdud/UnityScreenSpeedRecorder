@@ -16,7 +16,7 @@ public class RecorderManager : OSY.Singleton<RecorderManager>
     public int OptionFrameChunkSize { get; private set; }
 
     [ReadOnly(false)] public int capturingRecorderCount;
-    [ReadOnly(false)] public int capturingEndRecorderCount;
+    [ReadOnly(false)] public Queue<string> flushDestinationQueue = new Queue<string>();
 
     protected override void Awake()
     {

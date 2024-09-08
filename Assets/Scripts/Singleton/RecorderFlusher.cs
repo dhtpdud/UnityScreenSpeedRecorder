@@ -78,15 +78,17 @@ public class RecorderFlusher : OSY.Singleton<RecorderFlusher>
                 if (RecorderManager.Instance.capturingRecorderCount > 0)
                     RecorderManager.Instance.CapturingSetting();
             }
-            else if (RecorderManager.Instance.capturingRecorderCount == 0 && RecorderManager.Instance.capturingEndRecorderCount > 0)
+            else if (RecorderManager.Instance.capturingRecorderCount == 0 && RecorderManager.Instance.flushDestinationQueue.Count > 0)
             {
                 Debug.Log("캡쳐 모두 완료");
                 await FlushFramesTask(capturedFrames);
 
                 lock (this)
                 {
-                    RecorderManager.Instance.capturingEndRecorderCount--;
-                    if(RecorderManager.Instance.capturingEndRecorderCount == 0)
+                    string destination = RecorderManager.Instance.flushDestinationQueue.Dequeue();
+                    string ffmpeg = $"\"{Environment.CurrentDirectory}\\ffmpeg.exe\"";
+                    Process.Start(ffmpeg, $"-y -framerate {RecorderManager.Instance.OptionCaptureTargetFramerate} -f image2 -i \"{destination}%04d.png\" -c:v libsvtav1 -pix_fmt yuva420p \"{destination}result.webm\"");
+                    if (RecorderManager.Instance.flushDestinationQueue.Count == 0)
                         RecorderManager.Instance.ResetSetting();
                 }
             }
