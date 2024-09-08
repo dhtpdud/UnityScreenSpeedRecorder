@@ -1,8 +1,8 @@
 # UnityScreenRapidFire
 해당 프로젝트는 Unity 내부 카메라들의 영상을 비디오 파일로 저장하는 솔루션을 제공한다.
 
-Time.Timescale을 이용하여 배속촬영을 하고,
-Unitask를 이용하여 png 인코딩 작업을 병렬, 멀티스래드 처리한다.
+Time.Timescale을 이용하여 배속촬영을 하고,  
+Unitask를 이용하여 png 인코딩 작업을 병렬, 멀티스래드 처리한다.  
 때문에 녹화절차를 보다 빠르게 마무리 할 수 있다.
 
 ## 영상
