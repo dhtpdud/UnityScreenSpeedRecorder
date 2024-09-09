@@ -8,7 +8,7 @@
 4. 저장된 PNG 파일들을 비디오 인코더를 사용하여 비디오 파일로 인코딩한다.
 
 ## 영상
-https://youtu.be/GyUiG9uafMc
+https://youtu.be/g2rJE-xJrpw
 
 ## 원리
 ![Flow](https://github.com/user-attachments/assets/5131fa3b-03e4-4e85-8cb2-a0227632202e)
