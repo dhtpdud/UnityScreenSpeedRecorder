@@ -19,4 +19,4 @@ https://youtu.be/g2rJE-xJrpw
 ## 종속성
 1. Unitask
 2. Newtonsoft.Json
-3. ffmpeg
+3. ffmpeg(미포함)
