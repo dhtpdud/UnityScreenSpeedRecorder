@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using Unity.Collections;
 using UnityEngine;
 using UnityEngine.Experimental.Rendering;
@@ -54,6 +55,7 @@ public class RecorderFlusher : OSY.Singleton<RecorderFlusher>
         "False  -    n번째 작업이 모두 완료된 후, n+1번째 작업을 스래드들에게 할당합니다.")]
     private bool isEnableTaskDistributer = true;
 
+    private CancellationTokenSource flushCTS;
     public bool isFlushing { get; private set; }
 
     protected override void Awake()
@@ -119,6 +121,7 @@ public class RecorderFlusher : OSY.Singleton<RecorderFlusher>
                 return;
             isFlushing = true;
         }
+        flushCTS = await flushCTS.CancelAndRecycle(destroyCancellationToken);
         Debug.Log($"Flushing 시작");
         int capturedFramesCount = targetFrameQueue.Count;
         Debug.Log("처리 해야할 프레임 수: " + capturedFramesCount);
@@ -234,7 +237,7 @@ public class RecorderFlusher : OSY.Singleton<RecorderFlusher>
         #endregion
 
         Debug.Log("작업 분배 완료, 모든 작업 완료까지 대기");
-        await OSYUtils.WaitUntil(() => saveCount[0] >= capturedFramesCount, UniTask.Yield(PlayerLoopTiming.Update), destroyCancellationToken);
+        await OSYUtils.WaitUntil(() => saveCount[0] >= capturedFramesCount, UniTask.Yield(PlayerLoopTiming.Update), flushCTS.Token);
 
         Debug.Log("메모리 정리 시작");
         await UniTask.SwitchToMainThread();
@@ -252,25 +255,26 @@ public class RecorderFlusher : OSY.Singleton<RecorderFlusher>
         Debug.Log($"Flushing 끝, {capturedFramesCount}프레임 Flushed \n" +
             $"TaskWeight: {originTasksWeight[0]}, {originTasksWeight[1]}, {originTasksWeight[2]}, {originTasksWeight[3]}, {originTasksWeight[4]} / 총 작업 시간: {benchmarkWatch.ElapsedMilliseconds / 1000f}초");
 
+        flushCTS.Cancel();
         isFlushing = false;
     }
     async UniTask WaitForTaskManager(string currentTaskName, Func<bool> moveToNextTaskCondition, Func<bool> taskCompleteCondition, Action TaskDistributeAction, Stopwatch benchmarkWatch, NativeArray<float> lastBenchmarkTime)
     {
-        if (destroyCancellationToken.IsCancellationRequested) return;
+        if (flushCTS.IsCancellationRequested) return;
         switch (taskType)
         {
             case TaskType.AsyncFull:
                 UniTask.RunOnThreadPool(async () =>
                 {
-                    await OSYUtils.WaitUntil(moveToNextTaskCondition, UniTask.Yield(PlayerLoopTiming.Update), destroyCancellationToken);
-                    await OSYUtils.WaitUntilStopwatch(taskCompleteCondition, benchmarkWatch, lastBenchmarkTime, currentTaskName, destroyCancellationToken);
-                }, true, destroyCancellationToken).Forget();
+                    await OSYUtils.WaitUntil(moveToNextTaskCondition, UniTask.Yield(PlayerLoopTiming.Update), flushCTS.Token);
+                    await OSYUtils.WaitUntilStopwatch(taskCompleteCondition, benchmarkWatch, lastBenchmarkTime, currentTaskName, flushCTS.Token);
+                }, true, flushCTS.Token).Forget();
                 break;
             case TaskType.AsyncSemi:
-                await OSYUtils.WaitUntil(moveToNextTaskCondition, UniTask.Yield(PlayerLoopTiming.Update), destroyCancellationToken);
+                await OSYUtils.WaitUntil(moveToNextTaskCondition, UniTask.Yield(PlayerLoopTiming.Update), flushCTS.Token);
                 break;
             case TaskType.SyncFull:
-                await OSYUtils.WaitUntilStopwatch(moveToNextTaskCondition, benchmarkWatch, lastBenchmarkTime, currentTaskName, destroyCancellationToken);
+                await OSYUtils.WaitUntilStopwatch(moveToNextTaskCondition, benchmarkWatch, lastBenchmarkTime, currentTaskName, flushCTS.Token);
                 break;
         }
         if (isEnableTaskDistributer)
@@ -278,9 +282,9 @@ public class RecorderFlusher : OSY.Singleton<RecorderFlusher>
             UniTask.RunOnThreadPool(async () =>
             {
                 if (taskType == TaskType.AsyncSemi)
-                    await OSYUtils.WaitUntilStopwatch(taskCompleteCondition, benchmarkWatch, lastBenchmarkTime, currentTaskName, destroyCancellationToken);
+                    await OSYUtils.WaitUntilStopwatch(taskCompleteCondition, benchmarkWatch, lastBenchmarkTime, currentTaskName, flushCTS.Token);
                 TaskDistributeAction.Invoke();
-            }, true, destroyCancellationToken).Forget();
+            }, true, flushCTS.Token).Forget();
         }
     }
 
@@ -288,7 +292,7 @@ public class RecorderFlusher : OSY.Singleton<RecorderFlusher>
     async UniTaskVoid FrameToTexture2DTask(Queue<FrameInfo> targetFrames, Queue<FrameInfo> convertedFrames, int totalFrameCount)
     {
         await UniTask.SwitchToMainThread();
-        while (!destroyCancellationToken.IsCancellationRequested)
+        while (!flushCTS.IsCancellationRequested)
         {
             //Debug.Log($"2번 작업자: {Task.CurrentId}사로 입장!");
             //2. 촬영된 프레임(RenderTexture) Texture2D로 변환
@@ -375,7 +379,7 @@ public class RecorderFlusher : OSY.Singleton<RecorderFlusher>
     {
         //Debug.Log($"3번 작업자: {Task.CurrentId}사로 입장!");
         //3. 변환된 Texture2D 픽셀데이터로 변환
-        while (!destroyCancellationToken.IsCancellationRequested)
+        while (!flushCTS.IsCancellationRequested)
         {
             FrameInfo frame;
             try
@@ -397,7 +401,7 @@ public class RecorderFlusher : OSY.Singleton<RecorderFlusher>
                 await UniTask.Yield(PlayerLoopTiming.Update);
                 continue;
             }
-            while (!destroyCancellationToken.IsCancellationRequested)
+            while (!flushCTS.IsCancellationRequested)
             {
                 try
                 {
@@ -419,7 +423,7 @@ public class RecorderFlusher : OSY.Singleton<RecorderFlusher>
     {
         //Debug.Log($"4번 작업자: {Task.CurrentId}사로 입장!");
         //4. 프레임 픽셀데이터 PNG로 인코딩
-        while (!destroyCancellationToken.IsCancellationRequested)
+        while (!flushCTS.IsCancellationRequested)
         {
             FrameInfo frame;
             try
@@ -450,7 +454,7 @@ public class RecorderFlusher : OSY.Singleton<RecorderFlusher>
     {
         //Debug.Log($"5번 작업자: {Task.CurrentId}사로 입장!");
         //5. 인코딩된 프레임 .png 파일로 저장
-        while (!destroyCancellationToken.IsCancellationRequested && saveCount != null)
+        while (!flushCTS.IsCancellationRequested && saveCount != null)
         {
             FrameInfo frame;
             try
@@ -476,10 +480,10 @@ public class RecorderFlusher : OSY.Singleton<RecorderFlusher>
 
             UniTask.RunOnThreadPool(async () =>
             {
-                await File.WriteAllBytesAsync(frame.path, (byte[])frame.data, destroyCancellationToken);
+                await File.WriteAllBytesAsync(frame.path, (byte[])frame.data, flushCTS.Token);
                 lock (this)
                     saveCount[0]++;
-            }, true, destroyCancellationToken).Forget();
+            }, true, flushCTS.Token).Forget();
         }
     }
     #endregion
