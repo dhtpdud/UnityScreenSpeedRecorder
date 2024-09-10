@@ -3,7 +3,7 @@
 
 ## 절차
 1. Time.Timescale을 이용하여 배속촬영을 한다. 촬영된 프레임(RenderTexture)들은 VRAM에 캐싱된다.
-2. VRAM에 캐싱되어있는 RenderTexture 프레임들을 Texture2D로 변환, RAM으로 캐싱한다. 이로써 CPU에서 해당 프레임 데이터에 접근이 가능하다.
+2. VRAM에 캐싱되어있는 RenderTexture 프레임들을 Texture2D로 변환하여 RAM으로 캐싱한다. 이로써 CPU에서 해당 프레임 데이터에 접근이 가능하다.
 3. PNG 인코딩 & 저장 작업을 진행한다. 해당 작업은 Unitask를 이용하여 병렬, 멀티스레드로 빠르게 처리한다.
 4. 저장된 PNG 파일들을 비디오 인코더를 사용하여 비디오 파일로 인코딩한다.
 
