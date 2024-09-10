@@ -10,11 +10,12 @@
 ## 영상
 https://youtu.be/g2rJE-xJrpw
 
+## 빨리가기
+1. [PNG 인코딩 & 저장(Unitask, 멀티스레드)](https://github.com/dhtpdud/UnityScreenRapidFire/blob/main/Assets/Scripts/Singleton/RecorderFlusher.cs)
+
 ## 원리
 ![Flow](https://github.com/user-attachments/assets/5131fa3b-03e4-4e85-8cb2-a0227632202e)
 
-## 빨리가기
-1. [PNG 인코딩 & 저장(Unitask, 멀티스레드)](https://github.com/dhtpdud/UnityScreenRapidFire/blob/main/Assets/Scripts/Singleton/RecorderFlusher.cs)
 
 ## 종속성
 1. Unitask
