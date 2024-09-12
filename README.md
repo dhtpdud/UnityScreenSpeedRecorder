@@ -1,4 +1,4 @@
-# UnityScreenRapidFire
+# UnityScreenSpeedRecorder
 해당 프로젝트는 Unity 내부 카메라들의 영상을 비디오 파일로 저장하는 솔루션을 제공합니다.
 
 ## 절차
