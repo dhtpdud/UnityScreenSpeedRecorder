@@ -13,8 +13,8 @@
 ## 영상
 https://youtu.be/g2rJE-xJrpw
 
-## 원리
-![Flow](https://github.com/user-attachments/assets/264bb378-90e7-49fc-a4b3-0d5a4b3789a4)
+## Pipeline
+![Pipeline](https://github.com/user-attachments/assets/264bb378-90e7-49fc-a4b3-0d5a4b3789a4)
 
 ## 종속성
 1. Unitask
