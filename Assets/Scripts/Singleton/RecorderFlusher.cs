@@ -2,6 +2,7 @@ using Cysharp.Threading.Tasks;
 using OSY;
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
@@ -89,7 +90,14 @@ public class RecorderFlusher : OSY.Singleton<RecorderFlusher>
                 {
                     string destination = RecorderManager.Instance.flushDestinationQueue.Dequeue();
                     string ffmpeg = $"\"{Environment.CurrentDirectory}\\ffmpeg.exe\"";
-                    Process.Start(ffmpeg, $"-y -framerate {RecorderManager.Instance.OptionCaptureTargetFramerate} -f image2 -i \"{destination}%04d.png\" -c:v libsvtav1 -pix_fmt yuva420p \"{destination}result.webm\"");
+                    try
+                    {
+                        Process.Start(ffmpeg, $"-y -framerate {RecorderManager.Instance.OptionCaptureTargetFramerate} -f image2 -i \"{destination}%04d.png\" -c:v libsvtav1 -pix_fmt yuva420p \"{destination}result.webm\"");
+                    }
+                    catch(Win32Exception)
+                    {
+                        Debug.LogError("ffmpeg을 찾을 수 없습니다.");
+                    }
                     if (RecorderManager.Instance.flushDestinationQueue.Count == 0)
                         RecorderManager.Instance.ResetSetting();
                 }

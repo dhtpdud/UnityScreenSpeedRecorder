@@ -1,5 +1,6 @@
 using Cysharp.Threading.Tasks;
 using OSY;
+using System.IO;
 using UnityEngine;
 
 //targetFrameCount만큼 화면을 캡쳐하며, 캡쳐한 프레임들은 capturedFrames Queue에 캐싱합니다.
@@ -26,7 +27,13 @@ public class ScreenRecorder : MonoBehaviour
         var tokenCreate = destroyCancellationToken;
         camera ??= GetComponent<Camera>();
         camera.backgroundColor = Color.clear;
+        DirectoryInfo di = new DirectoryInfo(saveDirPath);
 
+        // 만약 폴더가 존재하지 않으면
+        if (di.Exists == false)
+        {
+            di.Create();
+        }
         if (canvas != null)
         {
             //Overlay Canvas는 RenderTexture를 통해 캡쳐되지 않음
