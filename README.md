@@ -1,6 +1,15 @@
 # UnityScreenSpeedRecorder
 해당 프로젝트는 Unity 내부 카메라들의 영상을 비디오 파일로 저장하는 솔루션을 제공합니다.
 
+![image](https://github.com/user-attachments/assets/6252cec6-4868-49d9-8a04-a64dd52234e3)
+
+
+`Camera`                = 촬영할 카메라  
+`captureFrameCount`     = 목표 캡처 프레임 수  
+`saveDirPath`           = 저장 경로  
+`outputImageExtension`  = 프레임 이미지 확장자  
+`canvas`                = 로그용 캔버스 (envRecorder.json의 IsDebug를 통해 On/Off)
+
 ## 코드 빨리가기
 1. [PNG 인코딩 & 저장(Unitask, 멀티스레드) 코드](https://github.com/dhtpdud/UnityScreenRapidFire/blob/main/Assets/Scripts/Singleton/RecorderFlusher.cs)
 
