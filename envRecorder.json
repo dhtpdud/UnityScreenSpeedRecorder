@@ -1,5 +1,5 @@
 {
-    "Timescale": 50,
+    "Timescale": 100,
     "CaptureTargetFramerate": 24,
     "FrameChunkSize": 500,
     "IsDebug": false

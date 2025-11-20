@@ -70,8 +70,8 @@ public class RecorderManager : OSY.Singleton<RecorderManager>
         GameManager.Instance.mainCam.enabled = false;
         Time.timeScale = OptionTimescale;
         var targetFR = OptionTimescale * OptionCaptureTargetFramerate;
-        Application.targetFrameRate = targetFR; // 50 * 30 = 1800fps
-        Time.captureFramerate = targetFR; //게임 속도를 조절하여, 하드웨어의 성능에 관계없이 해당 프레임 강제 고정
+        Application.targetFrameRate = targetFR; // 100 * 60 = 6000fps
+        Time.captureFramerate = targetFR; //업데이트 시간 자체를 조절하여, 하드웨어의 성능에 관계없이 해당 프레임을 강제 고정
         QualitySettings.vSyncCount = 0;
         QualitySettings.maxQueuedFrames = 4;
     }

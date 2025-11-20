@@ -10,7 +10,7 @@ public class ScreenRecorder : MonoBehaviour
     [SerializeField, ReadOnly(false)] private bool isCapturing;
     public bool IsCapturing { get => isCapturing; }
     public new Camera camera = null;                                        //카메라
-    [SerializeField] private int targetFrameCount = -1;                     //목표 캡쳐 프레임 수
+    [SerializeField] private int captureFrameCount = -1;                     //목표 캡쳐 프레임 수
     [SerializeField, ReadOnly(false)] private int capturedFrameCount;       //현재 캡쳐한 프레임 수
     [SerializeField] private string saveDirPath;                            //캐싱한 프레임들이 마지막에 저장될 경로
     [SerializeField] private string outputImageExtension = ".png";          //저장될 프레임의 이미지 확장자
@@ -55,7 +55,7 @@ public class ScreenRecorder : MonoBehaviour
             return;
         }
 
-        this.targetFrameCount = targetFrameCount;
+        this.captureFrameCount = targetFrameCount;
         capturedFrameCount = 0;
         this.saveDirPath = saveDirPath;
         this.outputImageExtension = imageExtension;
@@ -71,7 +71,7 @@ public class ScreenRecorder : MonoBehaviour
             isCapturing = true;
             camera.enabled = true;
             //1. 모든 프레임 캡쳐 후, capturedFrames(Queue)에 촬영된 프레임(RenderTexture) 저장
-            while (capturedFrameCount < targetFrameCount)
+            while (capturedFrameCount < captureFrameCount)
             {
                 await OSYUtils.WaitUntil(() => !capturedFrames.isLock, OSYUtils.YieldCaches.UniTaskYield, destroyCancellationToken);
                 RenderTexture frame = new RenderTexture(GameManager.Instance.ScreenWidth, GameManager.Instance.ScreenHeight, 16);
