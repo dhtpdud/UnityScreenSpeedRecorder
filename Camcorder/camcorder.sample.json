@@ -1,0 +1,30 @@
+{
+  "//": "UnityCamcorder 설정 예시. UnityCamcorder.exe 옆에 camcorder.json 으로 두면 자동으로 읽습니다.",
+
+  "//target": "대상 유니티 앱: 아래 셋 중 하나만 채우면 됩니다.",
+  "TargetExe": "C:\\Games\\MyUnityApp\\MyUnityApp.exe",
+  "TargetArgs": "",
+  "TargetProcessName": "",
+  "TargetPid": 0,
+
+  "//output": "결과 영상 설정",
+  "OutputPath": "C:\\Recordings\\output.mp4",
+  "Fps": 60,
+  "TotalFrames": 0,
+  "DurationSeconds": 10,
+
+  "//encode": "auto = GPU H.264 자동(NVENC→QSV→AMF→libx264). 직접 지정 예: libx264, hevc_nvenc, libvpx-vp9, libsvtav1",
+  "Codec": "auto",
+  "Quality": 23,
+  "ExtraFfmpegArgs": "",
+  "FfmpegPath": "",
+
+  "//capture": "촬영 동작",
+  "SpeedLimit": 0,
+  "WarmupFrames": 2,
+  "SlotCount": 8,
+
+  "//stability": "안정성",
+  "FreezeTimeoutMs": 10000,
+  "CloseTargetWhenDone": true
+}
