@@ -76,11 +76,15 @@ public class RecorderFlusher : OSY.Singleton<RecorderFlusher>
         //녹화 시작 전에 미리 ffmpeg를 준비하고, 사용 가능한 인코더를 찾아 둠
         bool isWindows = Application.platform == RuntimePlatform.WindowsPlayer || Application.platform == RuntimePlatform.WindowsEditor;
         string streamingAssetsPath = Application.streamingAssetsPath;
-        string persistentDataPath = Application.persistentDataPath;
+        //persistentDataPath(AppData\LocalLow)에 푼 실행 파일은 '낮은 무결성' 레이블을 물려받아,
+        //실행된 ffmpeg가 LocalLow 밖(Temp, 바탕 화면 등)에 파일을 쓰지 못함. 따라서 AppData\Local에 풂
+        string extractDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), Application.companyName, Application.productName, "ffmpeg");
+        string oldExtractDirectory = Path.Combine(Application.persistentDataPath, "ffmpeg");
         string preferredEncoder = RecorderManager.Instance.OptionVideoEncoder;
         videoEncoderTask = Task.Run(() =>
         {
-            string path = FindFfmpeg(isWindows, streamingAssetsPath, persistentDataPath);
+            DeleteDirectory(oldExtractDirectory);
+            string path = FindFfmpeg(isWindows, streamingAssetsPath, extractDirectory);
             return (path, SelectVideoEncoder(path, preferredEncoder));
         });
     }
@@ -124,7 +128,7 @@ public class RecorderFlusher : OSY.Singleton<RecorderFlusher>
     }
 
     //프로젝트에 포함된 ffmpeg(StreamingAssets/ffmpeg/ffmpeg.zip) → 실행 폴더 → PATH 순으로 ffmpeg를 찾습니다. (스레드풀에서 실행)
-    static string FindFfmpeg(bool isWindows, string streamingAssetsPath, string persistentDataPath)
+    static string FindFfmpeg(bool isWindows, string streamingAssetsPath, string extractDirectory)
     {
         string fileName = isWindows ? "ffmpeg.exe" : "ffmpeg";
         string bundledZipPath = Path.Combine(streamingAssetsPath, "ffmpeg", "ffmpeg.zip");
@@ -132,7 +136,7 @@ public class RecorderFlusher : OSY.Singleton<RecorderFlusher>
         {
             try
             {
-                return ExtractBundledFfmpeg(bundledZipPath, Path.Combine(persistentDataPath, "ffmpeg"), fileName);
+                return ExtractBundledFfmpeg(bundledZipPath, extractDirectory, fileName);
             }
             catch (Exception e)
             {
@@ -141,6 +145,19 @@ public class RecorderFlusher : OSY.Singleton<RecorderFlusher>
         }
         string localPath = Path.Combine(Environment.CurrentDirectory, fileName);
         return File.Exists(localPath) ? localPath : fileName;
+    }
+    //이전 버전에서 LocalLow에 풀어 둔 ffmpeg를 정리합니다.
+    static void DeleteDirectory(string path)
+    {
+        try
+        {
+            if (Directory.Exists(path))
+                Directory.Delete(path, true);
+        }
+        catch (Exception e)
+        {
+            Debug.LogWarning($"이전 ffmpeg 폴더를 지우지 못했습니다: {path}\n{e.Message}");
+        }
     }
     //ffmpeg.exe는 100MB가 넘어 GitHub에 그대로 올릴 수 없으므로 zip으로 포함하고, 처음 실행할 때 한 번만 풀어서 사용합니다.
     static string ExtractBundledFfmpeg(string zipPath, string extractDirectory, string fileName)
