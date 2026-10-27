@@ -39,6 +39,9 @@ public class RecorderFlusher : OSY.Singleton<RecorderFlusher>
         internal readonly BlockingCollection<FrameData> frames = new BlockingCollection<FrameData>();
         internal volatile bool isDone;
         internal int writtenFrameCount;
+        internal string arguments;
+        //실패 원인을 남기기 위해 ffmpeg가 출력한 마지막 로그를 보관
+        internal readonly ConcurrentQueue<string> ffmpegLog = new ConcurrentQueue<string>();
     }
 
     //빠른 순서대로 시도할 H.264 인코더 (GPU 하드웨어 인코더 우선)
@@ -241,14 +244,18 @@ public class RecorderFlusher : OSY.Singleton<RecorderFlusher>
             Debug.LogError($"ffmpeg을 찾을 수 없습니다. ({ffmpegPath})");
             return null;
         }
+        VideoSession session = new VideoSession { OutputPath = outputPath, EncoderName = encoder.name, process = process, arguments = arguments };
         process.ErrorDataReceived += (sender, e) =>
         {
-            if (!string.IsNullOrEmpty(e.Data))
-                Debug.LogWarning($"[ffmpeg] {e.Data}");
+            if (string.IsNullOrEmpty(e.Data))
+                return;
+            Debug.LogWarning($"[ffmpeg] {e.Data}");
+            session.ffmpegLog.Enqueue(e.Data);
+            while (session.ffmpegLog.Count > 30)
+                session.ffmpegLog.TryDequeue(out _);
         };
         process.BeginErrorReadLine();
 
-        VideoSession session = new VideoSession { OutputPath = outputPath, EncoderName = encoder.name, process = process };
         session.writer = new Thread(() => WriteFramesWorker(session)) { IsBackground = true, Name = $"RecorderFlusher Writer ({outputPath})" };
         lock (activeSessions)
             activeSessions.Add(session);
@@ -354,11 +361,10 @@ public class RecorderFlusher : OSY.Singleton<RecorderFlusher>
                     Interlocked.Increment(ref session.writtenFrameCount);
                 }
             }
-            catch (IOException e)
+            catch (IOException)
             {
-                //ffmpeg가 먼저 종료됨. 남은 프레임은 버리고 버퍼만 반환
+                //ffmpeg가 먼저 종료됨. 남은 프레임은 버리고 버퍼만 반환 (원인은 ffmpeg 종료 후 로그로 남김)
                 isInputClosed = true;
-                Debug.LogError($"ffmpeg에 프레임을 쓰지 못했습니다: {session.OutputPath}\n{e.Message}");
             }
             finally
             {
@@ -375,6 +381,10 @@ public class RecorderFlusher : OSY.Singleton<RecorderFlusher>
         session.process.WaitForExit();
         session.ExitCode = session.process.ExitCode;
         session.process.Dispose();
+        if (isInputClosed || session.ExitCode != 0)
+            Debug.LogError($"ffmpeg가 비정상 종료되었습니다 (exit code: {session.ExitCode}, 전달한 프레임: {session.writtenFrameCount}): {session.OutputPath}\n" +
+                $"인자: {session.arguments}\n" +
+                $"ffmpeg 로그:\n{string.Join("\n", session.ffmpegLog)}");
         lock (activeSessions)
             activeSessions.Remove(session);
         session.isDone = true;
