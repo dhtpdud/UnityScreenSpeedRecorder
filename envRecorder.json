@@ -2,5 +2,6 @@
     "Timescale": 100,
     "CaptureTargetFramerate": 24,
     "FrameChunkSize": 500,
+    "VideoEncoder": "auto",
     "IsDebug": false
 }

@@ -14,9 +14,10 @@ public class RecorderManager : OSY.Singleton<RecorderManager>
     public int OptionTimescale { get; private set; }
     public bool OptionIsDebug { get; private set; }
     public int OptionFrameChunkSize { get; private set; }//메모리에 동시에 올라갈 수 있는 최대 프레임 수 (1080p 기준 프레임당 약 8MB)
+    public string OptionVideoEncoder { get; private set; }//ffmpeg 영상 인코더 (auto: GPU 하드웨어 인코더 자동 선택)
 
     [ReadOnly(false)] public int capturingRecorderCount;    //촬영 중인 녹화기 수
-    [ReadOnly(false)] public int activeRecorderCount;       //촬영 ~ PNG 저장까지 진행 중인 녹화기 수
+    [ReadOnly(false)] public int activeRecorderCount;       //촬영 ~ 영상 인코딩까지 진행 중인 녹화기 수
 
     protected override void Awake()
     {
@@ -38,6 +39,7 @@ public class RecorderManager : OSY.Singleton<RecorderManager>
             OptionTimescale = (int)json["Timescale"];
             OptionIsDebug = (bool)json["IsDebug"];
             OptionFrameChunkSize = (int)json["FrameChunkSize"];
+            OptionVideoEncoder = (string)json["VideoEncoder"] ?? "auto";
             //SystemInfo.graphicsMemorySize * OptionMaxVramLimit = 전체 Vram사이즈 중 ~%
         }
         catch (FileNotFoundException)
