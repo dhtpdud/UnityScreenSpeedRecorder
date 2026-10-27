@@ -1,0 +1,56 @@
+name: UnityCamcorder 빌드
+
+# 외부 캠코더(주입 DLL + 주입기 + C# 캠코더)를 Windows에서 빌드해 배포용 zip으로 묶습니다.
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "Camcorder/**"
+      - ".github/workflows/camcorder.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: .NET 8 설치
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      # --- 네이티브(DLL + 주입기)를 MSVC로 x64/x86 각각 빌드 ---
+      - name: 네이티브 x64 빌드
+        run: |
+          cmake -S Camcorder/Native -B Camcorder/Native/build-x64 -A x64
+          cmake --build Camcorder/Native/build-x64 --config Release
+
+      - name: 네이티브 x86 빌드
+        run: |
+          cmake -S Camcorder/Native -B Camcorder/Native/build-x86 -A Win32
+          cmake --build Camcorder/Native/build-x86 --config Release
+
+      # --- C# 캠코더 (단일 파일, 자체 포함) ---
+      - name: 캠코더 publish
+        run: dotnet publish Camcorder/Controller/UnityCamcorder.csproj -c Release -o Camcorder/dist
+
+      # --- 배포 폴더 구성 ---
+      - name: 배포 폴더 구성
+        shell: pwsh
+        run: |
+          $dist = "Camcorder/dist"
+          New-Item -ItemType Directory -Force -Path "$dist/x64","$dist/x86" | Out-Null
+          Copy-Item Camcorder/Native/build-x64/Release/UnityCamcorderHook.dll "$dist/x64/"
+          Copy-Item Camcorder/Native/build-x64/Release/Inject.exe "$dist/x64/"
+          Copy-Item Camcorder/Native/build-x86/Release/UnityCamcorderHook.dll "$dist/x86/"
+          Copy-Item Camcorder/Native/build-x86/Release/Inject.exe "$dist/x86/"
+          Copy-Item Camcorder/README.md "$dist/"
+          Copy-Item Camcorder/camcorder.sample.json "$dist/camcorder.json"
+          Remove-Item "$dist/*.pdb" -ErrorAction SilentlyContinue
+
+      - name: 아티팩트 업로드
+        uses: actions/upload-artifact@v4
+        with:
+          name: UnityCamcorder
+          path: Camcorder/dist/**

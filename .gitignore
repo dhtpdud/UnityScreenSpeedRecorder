@@ -70,3 +70,12 @@ crashlytics-build.properties
 # Temporary auto-generated Android Assets
 /[Aa]ssets/[Ss]treamingAssets/aa.meta
 /[Aa]ssets/[Ss]treamingAssets/aa/*
+
+# UnityCamcorder (외부 캠코더) 빌드 산출물
+/Camcorder/Native/build-*/
+/Camcorder/Controller/bin/
+/Camcorder/Controller/obj/
+/Camcorder/dist/
+
+# UnityCamcorder의 C# 프로젝트 파일은 Unity 자동생성 csproj가 아니므로 추적
+!/Camcorder/Controller/UnityCamcorder.csproj
