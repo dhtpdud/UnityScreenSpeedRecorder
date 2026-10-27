@@ -1,7 +1,7 @@
 # UnityScreenSpeedRecorder
 해당 프로젝트는 Unity 내부 카메라들의 영상을 비디오 파일로 저장하는 솔루션을 제공합니다.
 
-![image](https://github.com/user-attachments/assets/6252cec6-4868-49d9-8a04-a64dd52234e3)
+![Inspector](Docs/Images/inspector.png)
 
 
 `Camera`                = 촬영할 카메라  
@@ -34,7 +34,7 @@
 https://youtu.be/g2rJE-xJrpw
 
 ## Pipeline
-![Pipeline](https://github.com/user-attachments/assets/264bb378-90e7-49fc-a4b3-0d5a4b3789a4)
+![Pipeline](Docs/Images/pipeline.png)
 
 ## 종속성
 1. Unitask
