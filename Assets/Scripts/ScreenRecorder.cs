@@ -115,10 +115,10 @@ public class ScreenRecorder : MonoBehaviour
 
         //2. ffmpeg가 남은 프레임을 모두 인코딩할 때까지 대기
         await UniTask.WaitUntil(() => session.IsDone, PlayerLoopTiming.Update, destroyCancellationToken);
-        if (session.ExitCode == 0)
+        if (session.IsSucceeded)
             Debug.Log($"영상 인코딩 완료: {session.OutputPath} ({session.EncoderName}, {session.WrittenFrameCount}프레임) / 캡쳐 시작부터 총 작업 시간: {benchmarkWatch.ElapsedMilliseconds / 1000f}초");
         else
-            Debug.LogError($"ffmpeg 인코딩 실패 (exit code: {session.ExitCode}): {session.OutputPath}");
+            Debug.LogError($"영상 인코딩 실패 (exit code: {session.ExitCode}): {session.OutputPath}");
         if (--manager.activeRecorderCount == 0)
         {
             flusher.ClearBufferPool();

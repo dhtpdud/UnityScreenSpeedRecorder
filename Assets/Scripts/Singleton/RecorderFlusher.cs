@@ -32,6 +32,7 @@ public class RecorderFlusher : OSY.Singleton<RecorderFlusher>
         public string EncoderName { get; internal set; }
         public bool IsDone => isDone;
         public int ExitCode { get; internal set; }
+        public bool IsSucceeded { get; internal set; }   //인코딩과 최종 경로로 옮기기까지 성공했는지
         public int WrittenFrameCount => writtenFrameCount;
 
         internal Process process;
@@ -40,6 +41,7 @@ public class RecorderFlusher : OSY.Singleton<RecorderFlusher>
         internal volatile bool isDone;
         internal int writtenFrameCount;
         internal string arguments;
+        internal string encodingPath;   //ffmpeg가 실제로 쓰는 임시 파일 경로
         //실패 원인을 남기기 위해 ffmpeg가 출력한 마지막 로그를 보관
         internal readonly ConcurrentQueue<string> ffmpegLog = new ConcurrentQueue<string>();
     }
@@ -223,10 +225,15 @@ public class RecorderFlusher : OSY.Singleton<RecorderFlusher>
             return null;
         }
 
+        //ffmpeg는 임시 폴더에 쓰고, 끝나면 Unity가 최종 경로로 옮김
+        //(Windows 랜섬웨어 보호(제어된 폴더 액세스)가 바탕 화면 등에 대한 ffmpeg의 쓰기를 막는 경우가 있음)
+        string encodingDirectory = Path.Combine(Application.temporaryCachePath, "Recording");
+        Directory.CreateDirectory(encodingDirectory);
+        string encodingPath = Path.Combine(encodingDirectory, $"{Guid.NewGuid():N}{Path.GetExtension(outputPath)}");
         //Unity 텍스처 데이터는 아래쪽 줄부터 저장되어 있으므로 vflip으로 뒤집음
         string arguments = "-hide_banner -loglevel warning -nostats -y " +
             $"-f rawvideo -pix_fmt rgba -video_size {width}x{height} -framerate {RecorderManager.Instance.OptionCaptureTargetFramerate} -i - " +
-            $"-vf vflip {encoder.args} \"{outputPath}\"";
+            $"-vf vflip {encoder.args} \"{encodingPath}\"";
         ProcessStartInfo startInfo = new ProcessStartInfo(ffmpegPath, arguments)
         {
             UseShellExecute = false,
@@ -244,7 +251,7 @@ public class RecorderFlusher : OSY.Singleton<RecorderFlusher>
             Debug.LogError($"ffmpeg을 찾을 수 없습니다. ({ffmpegPath})");
             return null;
         }
-        VideoSession session = new VideoSession { OutputPath = outputPath, EncoderName = encoder.name, process = process, arguments = arguments };
+        VideoSession session = new VideoSession { OutputPath = outputPath, EncoderName = encoder.name, process = process, arguments = arguments, encodingPath = encodingPath };
         process.ErrorDataReceived += (sender, e) =>
         {
             if (string.IsNullOrEmpty(e.Data))
@@ -340,6 +347,22 @@ public class RecorderFlusher : OSY.Singleton<RecorderFlusher>
         frameSlots.Release();
     }
 
+    //임시 폴더에 인코딩된 영상을 최종 경로로 옮깁니다.
+    static bool MoveEncodedVideo(VideoSession session)
+    {
+        try
+        {
+            if (File.Exists(session.OutputPath))
+                File.Delete(session.OutputPath);
+            File.Move(session.encodingPath, session.OutputPath);
+            return true;
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"인코딩된 영상을 옮기지 못했습니다: {session.encodingPath} → {session.OutputPath}\n{e.Message}\n(영상은 임시 경로에 남아 있습니다)");
+            return false;
+        }
+    }
     //세션의 프레임을 순서대로 ffmpeg 표준 입력에 쓰고, 인코딩이 끝날 때까지 기다립니다. (세션마다 전용 스레드)
     void WriteFramesWorker(VideoSession session)
     {
@@ -385,6 +408,8 @@ public class RecorderFlusher : OSY.Singleton<RecorderFlusher>
             Debug.LogError($"ffmpeg가 비정상 종료되었습니다 (exit code: {session.ExitCode}, 전달한 프레임: {session.writtenFrameCount}): {session.OutputPath}\n" +
                 $"인자: {session.arguments}\n" +
                 $"ffmpeg 로그:\n{string.Join("\n", session.ffmpegLog)}");
+        else
+            session.IsSucceeded = MoveEncodedVideo(session);
         lock (activeSessions)
             activeSessions.Remove(session);
         session.isDone = true;
