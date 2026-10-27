@@ -40,5 +40,6 @@ https://youtu.be/g2rJE-xJrpw
 1. Unitask
 2. Newtonsoft.Json
 3. ffmpeg 9.0.2 ([gyan.dev](https://www.gyan.dev/ffmpeg/builds/) essentials 빌드, GPL v3)
-   - `Assets/StreamingAssets/ffmpeg/ffmpeg.exe`에 포함되어 있으며, 100MB가 넘어 **Git LFS**로 관리합니다. 클론할 때 Git LFS가 필요합니다.
-   - StreamingAssets → 실행 폴더 → PATH 순으로 ffmpeg를 찾습니다. Windows 이외의 플랫폼에서는 PATH의 ffmpeg를 사용합니다.
+   - ffmpeg.exe가 100MB를 넘어 GitHub에 그대로 올릴 수 없으므로 `Assets/StreamingAssets/ffmpeg/ffmpeg.zip`으로 포함합니다. 처음 실행할 때 `Application.persistentDataPath/ffmpeg/ffmpeg.exe`로 한 번 압축을 풀어 사용합니다.
+   - 포함된 ffmpeg → 실행 폴더의 ffmpeg.exe → PATH 순으로 찾습니다. Windows 이외의 플랫폼에서는 PATH의 ffmpeg를 사용합니다.
+   - ffmpeg를 업데이트하려면 새 ffmpeg.exe 하나만 담은 zip으로 `ffmpeg.zip`을 교체하면 됩니다. (크기가 다르면 다시 압축을 풉니다.)

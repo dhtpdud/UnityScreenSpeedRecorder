@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.IO.Compression;
 using System.Threading;
 using System.Threading.Tasks;
 using Unity.Collections;
@@ -60,18 +61,23 @@ public class RecorderFlusher : OSY.Singleton<RecorderFlusher>
     private readonly List<VideoSession> activeSessions = new List<VideoSession>();
     //메모리에 동시에 올라갈 수 있는 프레임 수 제한
     private SemaphoreSlim frameSlots;
-    private Task<(string name, string args)> videoEncoderTask;
+    private Task<(string ffmpegPath, (string name, string args) encoder)> videoEncoderTask;
 
     void Start()
     {
         int maxBufferedFrames = RecorderManager.Instance.OptionFrameChunkSize > 0 ? RecorderManager.Instance.OptionFrameChunkSize : 64;
         frameSlots = new SemaphoreSlim(maxBufferedFrames, maxBufferedFrames);
 
-        ffmpegPath = FindFfmpeg();
-        //녹화 시작 전에 미리 사용 가능한 인코더를 찾아 둠
+        //녹화 시작 전에 미리 ffmpeg를 준비하고, 사용 가능한 인코더를 찾아 둠
+        bool isWindows = Application.platform == RuntimePlatform.WindowsPlayer || Application.platform == RuntimePlatform.WindowsEditor;
+        string streamingAssetsPath = Application.streamingAssetsPath;
+        string persistentDataPath = Application.persistentDataPath;
         string preferredEncoder = RecorderManager.Instance.OptionVideoEncoder;
-        string path = ffmpegPath;
-        videoEncoderTask = Task.Run(() => SelectVideoEncoder(path, preferredEncoder));
+        videoEncoderTask = Task.Run(() =>
+        {
+            string path = FindFfmpeg(isWindows, streamingAssetsPath, persistentDataPath);
+            return (path, SelectVideoEncoder(path, preferredEncoder));
+        });
     }
     void Update()
     {
@@ -112,20 +118,49 @@ public class RecorderFlusher : OSY.Singleton<RecorderFlusher>
         ClearBufferPool();
     }
 
-    //프로젝트에 포함된 StreamingAssets/ffmpeg → 실행 폴더 → PATH 순으로 ffmpeg를 찾습니다.
-    static string FindFfmpeg()
+    //프로젝트에 포함된 ffmpeg(StreamingAssets/ffmpeg/ffmpeg.zip) → 실행 폴더 → PATH 순으로 ffmpeg를 찾습니다. (스레드풀에서 실행)
+    static string FindFfmpeg(bool isWindows, string streamingAssetsPath, string persistentDataPath)
     {
-        bool isWindows = Application.platform == RuntimePlatform.WindowsPlayer || Application.platform == RuntimePlatform.WindowsEditor;
         string fileName = isWindows ? "ffmpeg.exe" : "ffmpeg";
-        string[] candidates =
+        string bundledZipPath = Path.Combine(streamingAssetsPath, "ffmpeg", "ffmpeg.zip");
+        if (isWindows && File.Exists(bundledZipPath))
         {
-            Path.Combine(Application.streamingAssetsPath, "ffmpeg", fileName),
-            Path.Combine(Environment.CurrentDirectory, fileName),
-        };
-        foreach (string candidate in candidates)
-            if (File.Exists(candidate))
-                return candidate;
-        return fileName;
+            try
+            {
+                return ExtractBundledFfmpeg(bundledZipPath, Path.Combine(persistentDataPath, "ffmpeg"), fileName);
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"포함된 ffmpeg 압축 해제 실패: {bundledZipPath}\n{e}");
+            }
+        }
+        string localPath = Path.Combine(Environment.CurrentDirectory, fileName);
+        return File.Exists(localPath) ? localPath : fileName;
+    }
+    //ffmpeg.exe는 100MB가 넘어 GitHub에 그대로 올릴 수 없으므로 zip으로 포함하고, 처음 실행할 때 한 번만 풀어서 사용합니다.
+    static string ExtractBundledFfmpeg(string zipPath, string extractDirectory, string fileName)
+    {
+        string exePath = Path.Combine(extractDirectory, fileName);
+        using (ZipArchive archive = new ZipArchive(File.OpenRead(zipPath), ZipArchiveMode.Read))
+        {
+            ZipArchiveEntry entry = archive.GetEntry(fileName);
+            if (entry == null)
+                throw new FileNotFoundException($"{zipPath} 안에 {fileName}이 없습니다.");
+            //이미 같은 크기로 풀려 있으면 재사용
+            if (File.Exists(exePath) && new FileInfo(exePath).Length == entry.Length)
+                return exePath;
+
+            Debug.Log($"포함된 ffmpeg 압축 해제: {exePath}");
+            Directory.CreateDirectory(extractDirectory);
+            string tempPath = exePath + ".tmp";
+            using (Stream source = entry.Open())
+            using (FileStream target = File.Create(tempPath))
+                source.CopyTo(target);
+            if (File.Exists(exePath))
+                File.Delete(exePath);
+            File.Move(tempPath, exePath);
+        }
+        return exePath;
     }
     //사용 가능한 인코더 중 가장 빠른 것을 고릅니다. (스레드풀에서 실행)
     static (string name, string args) SelectVideoEncoder(string ffmpegPath, string preferredEncoder)
@@ -175,8 +210,9 @@ public class RecorderFlusher : OSY.Singleton<RecorderFlusher>
     //녹화기 하나의 영상 인코딩을 시작합니다. 이후 RequestFrame으로 넘긴 프레임이 순서대로 인코딩됩니다. (메인 스레드 전용)
     public VideoSession StartVideoSession(string outputPath, int width, int height)
     {
-        //인코더 탐색이 아직 끝나지 않았으면, 게임 시간이 흐르지 않도록 메인 스레드에서 대기
-        (string name, string args) encoder = videoEncoderTask.Result;
+        //ffmpeg 준비와 인코더 탐색이 아직 끝나지 않았으면, 게임 시간이 흐르지 않도록 메인 스레드에서 대기
+        (string name, string args) encoder;
+        (ffmpegPath, encoder) = videoEncoderTask.Result;
         videoEncoderName = encoder.name;
         if (encoder.name == null)
         {
