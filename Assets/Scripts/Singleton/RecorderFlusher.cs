@@ -1,498 +1,434 @@
-using Cysharp.Threading.Tasks;
-using OSY;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
-using System.Linq;
+using System.IO.Compression;
 using System.Threading;
+using System.Threading.Tasks;
 using Unity.Collections;
 using UnityEngine;
-using UnityEngine.Experimental.Rendering;
+using UnityEngine.Rendering;
 using Debug = UnityEngine.Debug;
 
-//capturedFrames Queue에 캐싱되어 있는 프레임 데이터 들을 .png 파일로 인코딩하여 저장합니다.
+//ScreenRecorder가 요청한 프레임을 GPU에서 비동기로 읽어 와(AsyncGPUReadback), 녹화기마다 실행한 ffmpeg의 표준 입력으로 바로 넘깁니다.
+//PNG 인코딩 & 저장 없이 ffmpeg가 촬영과 동시에 영상을 인코딩하며, 가능하면 GPU 하드웨어 인코더(NVENC, QSV, AMF)를 사용합니다.
+//메모리에 올라간 프레임 수가 FrameChunkSize에 도달하면 ffmpeg가 따라올 때까지 메인 스레드를 잠시 멈춥니다.
+//(메인 스레드가 멈춰 있는 동안에는 게임 시간도 흐르지 않으므로, 프레임이 누락되지 않습니다.)
 public class RecorderFlusher : OSY.Singleton<RecorderFlusher>
 {
-    [SerializeField, ReadOnly(false)]
-    private int capturedCount;
-
-    [SerializeField, ReadOnly(false)]
-    private ManageableQueue<FrameInfo> capturedFrames;
-    public ManageableQueue<FrameInfo> CapturedFrames { get => capturedFrames; }
-    //Task 진행 방식
-    private enum TaskType
+    internal struct FrameData
     {
-        AsyncFull,
-        AsyncSemi,
-        SyncFull
+        public AsyncGPUReadbackRequest request;
+        public NativeArray<byte> pixels;
+        public VideoSession session;
     }
 
-    [SerializeField, Tooltip(
-        "작업의 비동기 여부를 정합니다.\n" +
-        "FullAsync  - 모든 작업이 동시에 시작됩니다. (비추천)\n" +
-        "SemiAsync  - 현재 작업이 한 프레임이라도 진행됐다면, 다음 작업이 실행됩니다. (권장)\n" +
-        "FullSync   - 현재 작업이 모두 끝나면, 다음 작업을 실행합니다.")]
-    private TaskType taskType = TaskType.AsyncSemi;
-
-    [SerializeField, Tooltip(
-        "작성된 숫자 만큼 해당 작업이 동시에 실행됩니다.\n" +
-        "0) 1번 작업: 프레임 촬영 작업    (수정 불가) (GPU 작업)\n" + //GPU Memory에 캐싱
-        "1) 2번 작업: RenderTexture       → Texture2D (GPU 작업)\n" + //GPU Memory → CPU Memory로 이동
-        "2) 3번 작업: Texture2D           → PixelsData(byte[])\n" + //이후 CPU 멀티스래딩 작업
-        "3) 4번 작업: PixelsData(byte[])  → PNGData(byte[])\n" +
-        "4) 5번 작업: PNGData(byte[])     → .png파일 저장")]
-
-    private int[] originTasksWeight;
-
-    [SerializeField, ReadOnly(false)]
-    private List<int> currentTasksWeight = new List<int>();
-
-    [SerializeField]
-    [Tooltip(
-        "작업 분배기 실행 여부\n" +
-        "True   -    스래드가 할당된 작업을 완료하면, 곧바로 해당 스래드에게 남은 작업을 할당합니다. (권장)\n" +
-        "False  -    n번째 작업이 모두 완료된 후, n+1번째 작업을 스래드들에게 할당합니다.")]
-    private bool isEnableTaskDistributer = true;
-
-    private CancellationTokenSource flushCTS;
-    public bool isFlushing { get; private set; }
-
-    protected override void Awake()
+    //녹화기 하나의 영상 인코딩 작업 (ffmpeg 프로세스 1개)
+    public class VideoSession
     {
-        capturedFrames = new ManageableQueue<FrameInfo>();
-        base.Awake();
+        public string OutputPath { get; internal set; }
+        public string EncoderName { get; internal set; }
+        public bool IsDone => isDone;
+        public int ExitCode { get; internal set; }
+        public bool IsSucceeded { get; internal set; }   //인코딩과 최종 경로로 옮기기까지 성공했는지
+        public int WrittenFrameCount => writtenFrameCount;
+
+        internal Process process;
+        internal Thread writer;
+        internal readonly BlockingCollection<FrameData> frames = new BlockingCollection<FrameData>();
+        internal volatile bool isDone;
+        internal int writtenFrameCount;
+        internal string arguments;
+        internal string encodingPath;   //ffmpeg가 실제로 쓰는 임시 파일 경로
+        //실패 원인을 남기기 위해 ffmpeg가 출력한 마지막 로그를 보관
+        internal readonly ConcurrentQueue<string> ffmpegLog = new ConcurrentQueue<string>();
     }
+
+    //빠른 순서대로 시도할 H.264 인코더 (GPU 하드웨어 인코더 우선)
+    private static readonly (string name, string args)[] videoEncoders =
+    {
+        ("h264_nvenc", "-c:v h264_nvenc -preset p1 -rc vbr -cq 23 -b:v 0"),         //NVIDIA
+        ("h264_qsv", "-c:v h264_qsv -preset veryfast -global_quality 23"),          //Intel
+        ("h264_amf", "-c:v h264_amf -quality speed -rc cqp -qp_i 23 -qp_p 23"),     //AMD
+        ("libx264", "-c:v libx264 -preset ultrafast -crf 23 -pix_fmt yuv420p"),     //CPU (하드웨어 인코더가 없을 때)
+    };
+
+    [SerializeField, ReadOnly(false)] private string ffmpegPath;
+    [SerializeField, ReadOnly(false)] private string videoEncoderName;
+    [SerializeField, ReadOnly(false)] private int readbackFrameCount;   //GPU에서 읽어 오는 중인 프레임 수
+
+    //메인 스레드에서만 접근
+    private readonly Queue<FrameData> pendingReadbacks = new Queue<FrameData>();
+    //프레임마다 버퍼를 새로 할당하지 않도록 재사용
+    private readonly ConcurrentBag<NativeArray<byte>> pixelBufferPool = new ConcurrentBag<NativeArray<byte>>();
+    private readonly List<VideoSession> activeSessions = new List<VideoSession>();
+    //메모리에 동시에 올라갈 수 있는 프레임 수 제한
+    private SemaphoreSlim frameSlots;
+    private Task<(string ffmpegPath, (string name, string args) encoder)> videoEncoderTask;
+
     void Start()
     {
-        UniTask.RunOnThreadPool(MemoryManagingTask, true, destroyCancellationToken).Forget();
-    }
-    async UniTaskVoid MemoryManagingTask()
-    {
-        while (!destroyCancellationToken.IsCancellationRequested)
+        int maxBufferedFrames = RecorderManager.Instance.OptionFrameChunkSize > 0 ? RecorderManager.Instance.OptionFrameChunkSize : 64;
+        frameSlots = new SemaphoreSlim(maxBufferedFrames, maxBufferedFrames);
+
+        //녹화 시작 전에 미리 ffmpeg를 준비하고, 사용 가능한 인코더를 찾아 둠
+        bool isWindows = Application.platform == RuntimePlatform.WindowsPlayer || Application.platform == RuntimePlatform.WindowsEditor;
+        string streamingAssetsPath = Application.streamingAssetsPath;
+        //persistentDataPath(AppData\LocalLow)에 푼 실행 파일은 '낮은 무결성' 레이블을 물려받아,
+        //실행된 ffmpeg가 LocalLow 밖(Temp, 바탕 화면 등)에 파일을 쓰지 못함. 따라서 AppData\Local에 풂
+        string extractDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), Application.companyName, Application.productName, "ffmpeg");
+        string oldExtractDirectory = Path.Combine(Application.persistentDataPath, "ffmpeg");
+        string preferredEncoder = RecorderManager.Instance.OptionVideoEncoder;
+        videoEncoderTask = Task.Run(() =>
         {
-            capturedCount = capturedFrames.queue.Count;
-            if (capturedCount >= RecorderManager.Instance.OptionFrameChunkSize)
-            {
-                Debug.Log("청크 꽉참");
-                await FlushFramesTask(capturedFrames);
-
-                if (RecorderManager.Instance.capturingRecorderCount > 0)
-                    RecorderManager.Instance.CapturingSetting();
-            }
-            else if (RecorderManager.Instance.capturingRecorderCount == 0 && RecorderManager.Instance.flushDestinationQueue.Count > 0)
-            {
-                Debug.Log("캡쳐 모두 완료");
-                await FlushFramesTask(capturedFrames);
-
-                lock (this)
-                {
-                    string destination = RecorderManager.Instance.flushDestinationQueue.Dequeue();
-                    string ffmpeg = $"\"{Environment.CurrentDirectory}\\ffmpeg.exe\"";
-                    try
-                    {
-                        Process.Start(ffmpeg, $"-y -framerate {RecorderManager.Instance.OptionCaptureTargetFramerate} -f image2 -i \"{destination}%04d.png\" -c:v libsvtav1 -pix_fmt yuva420p \"{destination}result.webm\"");
-                    }
-                    catch(Win32Exception)
-                    {
-                        Debug.LogError("ffmpeg을 찾을 수 없습니다.");
-                    }
-                    if (RecorderManager.Instance.flushDestinationQueue.Count == 0)
-                        RecorderManager.Instance.ResetSetting();
-                }
-            }
-            await OSYUtils.YieldCaches.UniTaskYield;
-        }
+            DeleteDirectory(oldExtractDirectory);
+            string path = FindFfmpeg(isWindows, streamingAssetsPath, extractDirectory);
+            return (path, SelectVideoEncoder(path, preferredEncoder));
+        });
     }
-    public async UniTask FlushFramesTask(ManageableQueue<FrameInfo> targetFrameQueue)
+    void Update()
     {
-        capturedFrames.isLock = true;
-        await FlushFramesTask(capturedFrames.queue);
-
-        //
-        capturedFrames = new ManageableQueue<FrameInfo>(true);
-        /* FlushingTask 이후, 반드시 위 코드처럼 capturedFrames 객체를 다시 생성해주어야함.
-         * 본래, 해당 코드가 없더라도 코드상 문제가 없어 보이지만,
-         * UniTask로 인한 "컨텍스트 스위칭" 과 GC가 돌아가는 과정에서 capturedFrames.queue의 메모리에 문제가 생기는 것으로 보임.
-         * 때문에, 해당 코드를 통해 객체를 아예 새로 생성하고, 메모리를 다시 잡아주는 것.
-         * 
-         * 해당 버그는 위 코드를 비활성화시 확인 가능
-         */
-        capturedFrames.isLock = false;
+        ProcessCompletedReadbacks();
+        readbackFrameCount = pendingReadbacks.Count;
     }
-    public async UniTask FlushFramesTask(Queue<FrameInfo> targetFrameQueue)
+    private void OnDestroy()
     {
-        lock (this)
-        {
-            if (isFlushing)
-                return;
-            isFlushing = true;
-        }
-        flushCTS = await flushCTS.CancelAndRecycle(destroyCancellationToken);
-        Debug.Log($"Flushing 시작");
-        int capturedFramesCount = targetFrameQueue.Count;
-        Debug.Log("처리 해야할 프레임 수: " + capturedFramesCount);
-        if (capturedFramesCount == 0)
+        if (frameSlots == null)
             return;
-
-        await UniTask.SwitchToMainThread();
-        RecorderManager.Instance.FlushingSetting();
-
-        currentTasksWeight.Clear();
-        currentTasksWeight = originTasksWeight.ToList();
-
-        await UniTask.SwitchToThreadPool();
-
-        //2번 작업 참조 아웃풋 변수
-        Queue<FrameInfo> convertedFrames = new Queue<FrameInfo>();
-
-        //3번 작업 참조 아웃풋 변수
-        Queue<FrameInfo> pixelDataOfFrames = new Queue<FrameInfo>();
-
-        //4번 작업 참조 아웃풋 변수
-        Queue<FrameInfo> encodedFrames = new Queue<FrameInfo>();
-
-        //5번 작업 참조 아웃풋 변수
-        NativeArray<int> saveCount = new NativeArray<int>(1, Allocator.Persistent);
-
-        Stopwatch benchmarkWatch = new Stopwatch();
-        benchmarkWatch.Start();
-        NativeArray<float> lastBenchmarkTime = new NativeArray<float>(1, Allocator.Persistent);
-
-        Func<bool> moveToNextTaskCondition;
-        #region 2. 촬영된 프레임(RenderTexture) Texture2D로 변환
-        for (int i = 0; i < currentTasksWeight[1]; i++)
+        //인코딩 중인 ffmpeg를 종료하고, 프레임 쓰기 스레드가 끝날 때까지 대기
+        VideoSession[] sessions;
+        lock (activeSessions)
+            sessions = activeSessions.ToArray();
+        bool isAllWritersStopped = true;
+        foreach (VideoSession session in sessions)
         {
-            UniTask.RunOnThreadPool(() => FrameToTexture2DTask(targetFrameQueue, convertedFrames, capturedFramesCount), true, destroyCancellationToken).Forget();
-        }
-        moveToNextTaskCondition = taskType == TaskType.SyncFull ? () => convertedFrames.Count >= capturedFramesCount : () => convertedFrames.Count > 0;
-        await WaitForTaskManager("2번 - (RenderTexture → Texture2D)", moveToNextTaskCondition, () => targetFrameQueue.Count == 0, () =>
-        {
-            int weightThreadHav = currentTasksWeight[1];
-            currentTasksWeight[1] = 0;
-            for (int i = 0; i < weightThreadHav / 3f; i++)
+            session.frames.CompleteAdding();
+            try
             {
-                if (convertedFrames.Count > 0)
-                    UniTask.RunOnThreadPool(() => Texture2DFrameToPixelData(convertedFrames, pixelDataOfFrames, capturedFramesCount), true, destroyCancellationToken).Forget();
-                if (pixelDataOfFrames.Count > 0)
-                    UniTask.RunOnThreadPool(() => PixelDataFrameToPNG(pixelDataOfFrames, encodedFrames, capturedFramesCount), true, destroyCancellationToken).Forget();
-                if (encodedFrames.Count > 0)
-                    UniTask.RunOnThreadPool(() => PNGSaveTask(encodedFrames, capturedFramesCount, saveCount), true, destroyCancellationToken).Forget();
-                lock (currentTasksWeight)
-                {
-                    currentTasksWeight[2]++;
-                    currentTasksWeight[3]++;
-                    currentTasksWeight[4]++;
-                }
+                if (!session.process.HasExited)
+                    session.process.Kill();
             }
-        }, benchmarkWatch, lastBenchmarkTime);
-        #endregion
-
-        benchmarkWatch.Start();
-        #region 3. 변환된 Texture2D 픽셀데이터로 변환
-        for (int i = 0; (taskType == TaskType.AsyncFull ? true : convertedFrames.Count > 0) && i < currentTasksWeight[2]; i++)
-        {
-            UniTask.RunOnThreadPool(() => Texture2DFrameToPixelData(convertedFrames, pixelDataOfFrames, capturedFramesCount), true, destroyCancellationToken).Forget();
-        }
-        moveToNextTaskCondition = taskType == TaskType.SyncFull ? () => pixelDataOfFrames.Count >= capturedFramesCount : () => pixelDataOfFrames.Count > 0;
-        await WaitForTaskManager("3번 - (Texture2D → pixelData 바이트 배열)", moveToNextTaskCondition, () => convertedFrames.Count == 0, () =>
-        {
-            int weightThreadHav = currentTasksWeight[2];
-            currentTasksWeight[2] = 0;
-            for (int i = 0; i < weightThreadHav / 2f; i++)
+            catch (Exception)
             {
-                if (pixelDataOfFrames.Count > 0)
-                    UniTask.RunOnThreadPool(() => PixelDataFrameToPNG(pixelDataOfFrames, encodedFrames, capturedFramesCount), true, destroyCancellationToken).Forget();
-                if (encodedFrames.Count > 0)
-                    UniTask.RunOnThreadPool(() => PNGSaveTask(encodedFrames, capturedFramesCount, saveCount), true, destroyCancellationToken).Forget();
-                lock (currentTasksWeight)
-                {
-                    currentTasksWeight[3]++;
-                    currentTasksWeight[4]++;
-                }
             }
-        }, benchmarkWatch, lastBenchmarkTime);
-        #endregion
-
-        benchmarkWatch.Start();
-        #region 4. 프레임 픽셀데이터 PNG로 인코딩
-        for (int i = 0; (taskType == TaskType.AsyncFull ? true : pixelDataOfFrames.Count > 0) && i < currentTasksWeight[3]; i++)
-        {
-            UniTask.RunOnThreadPool(() => PixelDataFrameToPNG(pixelDataOfFrames, encodedFrames, capturedFramesCount), true, destroyCancellationToken).Forget();
+            isAllWritersStopped &= session.writer.Join(5000);
         }
-        moveToNextTaskCondition = taskType == TaskType.SyncFull ? () => encodedFrames.Count >= capturedFramesCount : () => encodedFrames.Count > 0;
-        await WaitForTaskManager("4번 - (pixelData 바이트 배열 → PNG 인코딩 바이트 배열)", moveToNextTaskCondition, () => pixelDataOfFrames.Count == 0, () =>
+        if (!isAllWritersStopped)
         {
-            int weightThreadHav = currentTasksWeight[3];
-            currentTasksWeight[3] = 0;
-            for (int i = 0; i < weightThreadHav; i++)
-            {
-                if (encodedFrames.Count > 0)
-                    UniTask.RunOnThreadPool(() => PNGSaveTask(encodedFrames, capturedFramesCount, saveCount), true, destroyCancellationToken).Forget();
-                lock (currentTasksWeight)
-                    currentTasksWeight[4]++;
-            }
-        }, benchmarkWatch, lastBenchmarkTime);
-        #endregion
-
-        benchmarkWatch.Start();
-        #region 5. 인코딩된 프레임 .png 파일로 저장
-        for (int i = 0; (taskType == TaskType.AsyncFull ? true : encodedFrames.Count > 0) && i < currentTasksWeight[4]; i++)
-        {
-            UniTask.RunOnThreadPool(() => PNGSaveTask(encodedFrames, capturedFramesCount, saveCount), true, destroyCancellationToken).Forget();
+            //아직 버퍼를 사용 중인 스레드가 있으므로 해제하지 않음
+            Debug.LogWarning("RecorderFlusher 프레임 쓰기 스레드가 종료되지 않아, 프레임 버퍼를 해제하지 않습니다.");
+            return;
         }
-        #endregion
-
-        Debug.Log("작업 분배 완료, 모든 작업 완료까지 대기");
-        await OSYUtils.WaitUntil(() => saveCount[0] >= capturedFramesCount, UniTask.Yield(PlayerLoopTiming.Update), flushCTS.Token);
-
-        Debug.Log("메모리 정리 시작");
-        await UniTask.SwitchToMainThread();
-#if !UNITY_EDITOR
-        UnityEngine.Scripting.GarbageCollector.GCMode = UnityEngine.Scripting.GarbageCollector.Mode.Enabled;
-#endif
-        lastBenchmarkTime.Dispose();
-        saveCount.Dispose();
-        targetFrameQueue.Clear();
-        await Resources.UnloadUnusedAssets();
-        GC.Collect();
-        Debug.Log("메모리 정리 완료");
-
-        benchmarkWatch.Stop();
-        Debug.Log($"Flushing 끝, {capturedFramesCount}프레임 Flushed \n" +
-            $"TaskWeight: {originTasksWeight[0]}, {originTasksWeight[1]}, {originTasksWeight[2]}, {originTasksWeight[3]}, {originTasksWeight[4]} / 총 작업 시간: {benchmarkWatch.ElapsedMilliseconds / 1000f}초");
-
-        flushCTS.Cancel();
-        isFlushing = false;
+        AsyncGPUReadback.WaitAllRequests();
+        while (pendingReadbacks.Count > 0)
+            pendingReadbacks.Dequeue().pixels.Dispose();
+        ClearBufferPool();
     }
-    async UniTask WaitForTaskManager(string currentTaskName, Func<bool> moveToNextTaskCondition, Func<bool> taskCompleteCondition, Action TaskDistributeAction, Stopwatch benchmarkWatch, NativeArray<float> lastBenchmarkTime)
+
+    //프로젝트에 포함된 ffmpeg(StreamingAssets/ffmpeg/ffmpeg.zip) → 실행 폴더 → PATH 순으로 ffmpeg를 찾습니다. (스레드풀에서 실행)
+    static string FindFfmpeg(bool isWindows, string streamingAssetsPath, string extractDirectory)
     {
-        if (flushCTS.IsCancellationRequested) return;
-        switch (taskType)
+        string fileName = isWindows ? "ffmpeg.exe" : "ffmpeg";
+        string bundledZipPath = Path.Combine(streamingAssetsPath, "ffmpeg", "ffmpeg.zip");
+        if (isWindows && File.Exists(bundledZipPath))
         {
-            case TaskType.AsyncFull:
-                UniTask.RunOnThreadPool(async () =>
-                {
-                    await OSYUtils.WaitUntil(moveToNextTaskCondition, UniTask.Yield(PlayerLoopTiming.Update), flushCTS.Token);
-                    await OSYUtils.WaitUntilStopwatch(taskCompleteCondition, benchmarkWatch, lastBenchmarkTime, currentTaskName, flushCTS.Token);
-                }, true, flushCTS.Token).Forget();
-                break;
-            case TaskType.AsyncSemi:
-                await OSYUtils.WaitUntil(moveToNextTaskCondition, UniTask.Yield(PlayerLoopTiming.Update), flushCTS.Token);
-                break;
-            case TaskType.SyncFull:
-                await OSYUtils.WaitUntilStopwatch(moveToNextTaskCondition, benchmarkWatch, lastBenchmarkTime, currentTaskName, flushCTS.Token);
+            try
+            {
+                return ExtractBundledFfmpeg(bundledZipPath, extractDirectory, fileName);
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"포함된 ffmpeg 압축 해제 실패: {bundledZipPath}\n{e}");
+            }
+        }
+        string localPath = Path.Combine(Environment.CurrentDirectory, fileName);
+        return File.Exists(localPath) ? localPath : fileName;
+    }
+    //이전 버전에서 LocalLow에 풀어 둔 ffmpeg를 정리합니다.
+    static void DeleteDirectory(string path)
+    {
+        try
+        {
+            if (Directory.Exists(path))
+                Directory.Delete(path, true);
+        }
+        catch (Exception e)
+        {
+            Debug.LogWarning($"이전 ffmpeg 폴더를 지우지 못했습니다: {path}\n{e.Message}");
+        }
+    }
+    //ffmpeg.exe는 100MB가 넘어 GitHub에 그대로 올릴 수 없으므로 zip으로 포함하고, 처음 실행할 때 한 번만 풀어서 사용합니다.
+    static string ExtractBundledFfmpeg(string zipPath, string extractDirectory, string fileName)
+    {
+        string exePath = Path.Combine(extractDirectory, fileName);
+        using (ZipArchive archive = new ZipArchive(File.OpenRead(zipPath), ZipArchiveMode.Read))
+        {
+            ZipArchiveEntry entry = archive.GetEntry(fileName);
+            if (entry == null)
+                throw new FileNotFoundException($"{zipPath} 안에 {fileName}이 없습니다.");
+            //이미 같은 크기로 풀려 있으면 재사용
+            if (File.Exists(exePath) && new FileInfo(exePath).Length == entry.Length)
+                return exePath;
+
+            Debug.Log($"포함된 ffmpeg 압축 해제: {exePath}");
+            Directory.CreateDirectory(extractDirectory);
+            string tempPath = exePath + ".tmp";
+            using (Stream source = entry.Open())
+            using (FileStream target = File.Create(tempPath))
+                source.CopyTo(target);
+            if (File.Exists(exePath))
+                File.Delete(exePath);
+            File.Move(tempPath, exePath);
+        }
+        return exePath;
+    }
+    //사용 가능한 인코더 중 가장 빠른 것을 고릅니다. (스레드풀에서 실행)
+    static (string name, string args) SelectVideoEncoder(string ffmpegPath, string preferredEncoder)
+    {
+        if (!string.IsNullOrEmpty(preferredEncoder) && preferredEncoder != "auto")
+        {
+            foreach (var encoder in videoEncoders)
+                if (encoder.name == preferredEncoder)
+                    return encoder;
+            return (preferredEncoder, $"-c:v {preferredEncoder}");
+        }
+        foreach (var encoder in videoEncoders)
+        {
+            //짧은 테스트 영상을 실제로 인코딩해 보고, 성공한 인코더를 사용 (GPU나 드라이버가 없으면 실패함)
+            int exitCode = RunFfmpeg(ffmpegPath, $"-hide_banner -loglevel error -f lavfi -i color=c=black:s=640x360:r=24 -frames:v 5 {encoder.args} -f null -", 15000);
+            if (exitCode == 0)
+                return encoder;
+            if (exitCode == int.MinValue)
                 break;
         }
-        if (isEnableTaskDistributer)
+        return (null, null);
+    }
+    //ffmpeg를 실행하고 종료 코드를 반환합니다. ffmpeg를 찾을 수 없으면 int.MinValue를 반환합니다.
+    static int RunFfmpeg(string ffmpegPath, string arguments, int timeoutMilliseconds)
+    {
+        try
         {
-            UniTask.RunOnThreadPool(async () =>
+            using (Process process = Process.Start(new ProcessStartInfo(ffmpegPath, arguments) { UseShellExecute = false, CreateNoWindow = true }))
             {
-                if (taskType == TaskType.AsyncSemi)
-                    await OSYUtils.WaitUntilStopwatch(taskCompleteCondition, benchmarkWatch, lastBenchmarkTime, currentTaskName, flushCTS.Token);
-                TaskDistributeAction.Invoke();
-            }, true, flushCTS.Token).Forget();
+                if (process.WaitForExit(timeoutMilliseconds))
+                    return process.ExitCode;
+                process.Kill();
+                return -1;
+            }
+        }
+        catch (Win32Exception)
+        {
+            return int.MinValue;
+        }
+        catch (Exception e)
+        {
+            Debug.LogWarning($"ffmpeg 실행 실패: {e.Message}");
+            return -1;
         }
     }
 
-    #region 2 ~ 5 작업 함수
-    async UniTaskVoid FrameToTexture2DTask(Queue<FrameInfo> targetFrames, Queue<FrameInfo> convertedFrames, int totalFrameCount)
+    //녹화기 하나의 영상 인코딩을 시작합니다. 이후 RequestFrame으로 넘긴 프레임이 순서대로 인코딩됩니다. (메인 스레드 전용)
+    public VideoSession StartVideoSession(string outputPath, int width, int height)
     {
-        await UniTask.SwitchToMainThread();
-        while (!flushCTS.IsCancellationRequested)
+        //ffmpeg 준비와 인코더 탐색이 아직 끝나지 않았으면, 게임 시간이 흐르지 않도록 메인 스레드에서 대기
+        (string name, string args) encoder;
+        (ffmpegPath, encoder) = videoEncoderTask.Result;
+        videoEncoderName = encoder.name;
+        if (encoder.name == null)
         {
-            //Debug.Log($"2번 작업자: {Task.CurrentId}사로 입장!");
-            //2. 촬영된 프레임(RenderTexture) Texture2D로 변환
-            FrameInfo frame;
+            Debug.LogError($"사용 가능한 ffmpeg 또는 영상 인코더를 찾을 수 없습니다. ({ffmpegPath})");
+            return null;
+        }
+
+        //ffmpeg는 임시 폴더에 쓰고, 끝나면 Unity가 최종 경로로 옮김
+        //(Windows 랜섬웨어 보호(제어된 폴더 액세스)가 바탕 화면 등에 대한 ffmpeg의 쓰기를 막는 경우가 있음)
+        string encodingDirectory = Path.Combine(Application.temporaryCachePath, "Recording");
+        Directory.CreateDirectory(encodingDirectory);
+        string encodingPath = Path.Combine(encodingDirectory, $"{Guid.NewGuid():N}{Path.GetExtension(outputPath)}");
+        //Unity 텍스처 데이터는 아래쪽 줄부터 저장되어 있으므로 vflip으로 뒤집음
+        string arguments = "-hide_banner -loglevel warning -nostats -y " +
+            $"-f rawvideo -pix_fmt rgba -video_size {width}x{height} -framerate {RecorderManager.Instance.OptionCaptureTargetFramerate} -i - " +
+            $"-vf vflip {encoder.args} \"{encodingPath}\"";
+        ProcessStartInfo startInfo = new ProcessStartInfo(ffmpegPath, arguments)
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardInput = true,
+            RedirectStandardError = true
+        };
+        Process process;
+        try
+        {
+            process = Process.Start(startInfo);
+        }
+        catch (Win32Exception)
+        {
+            Debug.LogError($"ffmpeg을 찾을 수 없습니다. ({ffmpegPath})");
+            return null;
+        }
+        VideoSession session = new VideoSession { OutputPath = outputPath, EncoderName = encoder.name, process = process, arguments = arguments, encodingPath = encodingPath };
+        process.ErrorDataReceived += (sender, e) =>
+        {
+            if (string.IsNullOrEmpty(e.Data))
+                return;
+            Debug.LogWarning($"[ffmpeg] {e.Data}");
+            session.ffmpegLog.Enqueue(e.Data);
+            while (session.ffmpegLog.Count > 30)
+                session.ffmpegLog.TryDequeue(out _);
+        };
+        process.BeginErrorReadLine();
+
+        session.writer = new Thread(() => WriteFramesWorker(session)) { IsBackground = true, Name = $"RecorderFlusher Writer ({outputPath})" };
+        lock (activeSessions)
+            activeSessions.Add(session);
+        session.writer.Start();
+        Debug.Log($"영상 인코딩 시작: {outputPath} / 인코더: {encoder.name}");
+        return session;
+    }
+    //녹화기의 마지막 프레임을 넘긴 뒤 호출합니다. 남은 프레임을 모두 쓰면 ffmpeg 입력을 닫습니다. (메인 스레드 전용)
+    public void FinishVideoSession(VideoSession session)
+    {
+        //이 세션의 프레임이 아직 GPU에서 읽히는 중일 수 있으므로 먼저 완료시킴
+        CompletePendingReadbacks();
+        session.frames.CompleteAdding();
+    }
+
+    //source의 현재 내용을 GPU에서 비동기로 읽어 오도록 요청합니다. (메인 스레드 전용)
+    public void RequestFrame(RenderTexture source, VideoSession session)
+    {
+        ProcessCompletedReadbacks();
+        //빈 슬롯이 없으면, 가장 오래된 읽기 요청부터 완료시켜 ffmpeg 쪽으로 넘기고
+        //그래도 없으면 ffmpeg가 프레임을 가져갈 때까지 대기
+        while (!frameSlots.Wait(0))
+        {
+            if (pendingReadbacks.Count > 0)
+            {
+                FrameData oldest = pendingReadbacks.Dequeue();
+                oldest.request.WaitForCompletion();
+                OnReadbackCompleted(oldest);
+            }
+            else
+            {
+                frameSlots.Wait(destroyCancellationToken);
+                break;
+            }
+        }
+
+        int size = source.width * source.height * 4;
+        if (!pixelBufferPool.TryTake(out NativeArray<byte> pixels) || pixels.Length != size)
+        {
+            if (pixels.IsCreated)
+                pixels.Dispose();
+            pixels = new NativeArray<byte>(size, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+        }
+        AsyncGPUReadbackRequest request = AsyncGPUReadback.RequestIntoNativeArray(ref pixels, source, 0, TextureFormat.RGBA32);
+        pendingReadbacks.Enqueue(new FrameData { request = request, pixels = pixels, session = session });
+    }
+    //아직 끝나지 않은 읽기 요청을 모두 완료시킵니다. (메인 스레드 전용)
+    public void CompletePendingReadbacks()
+    {
+        while (pendingReadbacks.Count > 0)
+        {
+            FrameData frame = pendingReadbacks.Dequeue();
+            frame.request.WaitForCompletion();
+            OnReadbackCompleted(frame);
+        }
+    }
+    //녹화가 모두 끝나면, 재사용하려고 들고 있던 프레임 버퍼를 해제합니다. (메인 스레드 전용)
+    public void ClearBufferPool()
+    {
+        while (pixelBufferPool.TryTake(out NativeArray<byte> pixels))
+            pixels.Dispose();
+    }
+    void ProcessCompletedReadbacks()
+    {
+        //요청은 순서대로 완료되므로, 앞에서부터 끝난 것만 꺼냄
+        while (pendingReadbacks.Count > 0 && pendingReadbacks.Peek().request.done)
+            OnReadbackCompleted(pendingReadbacks.Dequeue());
+    }
+    void OnReadbackCompleted(FrameData frame)
+    {
+        if (frame.request.hasError)
+        {
+            Debug.LogError($"GPU 리드백 실패, 프레임이 누락됩니다: {frame.session.OutputPath}");
+            ReleaseFrame(frame);
+            return;
+        }
+        frame.session.frames.Add(frame);
+    }
+    void ReleaseFrame(FrameData frame)
+    {
+        pixelBufferPool.Add(frame.pixels);
+        frameSlots.Release();
+    }
+
+    //임시 폴더에 인코딩된 영상을 최종 경로로 옮깁니다.
+    static bool MoveEncodedVideo(VideoSession session)
+    {
+        try
+        {
+            if (File.Exists(session.OutputPath))
+                File.Delete(session.OutputPath);
+            File.Move(session.encodingPath, session.OutputPath);
+            return true;
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"인코딩된 영상을 옮기지 못했습니다: {session.encodingPath} → {session.OutputPath}\n{e.Message}\n(영상은 임시 경로에 남아 있습니다)");
+            return false;
+        }
+    }
+    //세션의 프레임을 순서대로 ffmpeg 표준 입력에 쓰고, 인코딩이 끝날 때까지 기다립니다. (세션마다 전용 스레드)
+    void WriteFramesWorker(VideoSession session)
+    {
+        byte[] writeBuffer = new byte[1 << 20];
+        Stream input = session.process.StandardInput.BaseStream;
+        bool isInputClosed = false;
+        foreach (FrameData frame in session.frames.GetConsumingEnumerable())
+        {
             try
             {
-                lock (targetFrames)
+                if (!isInputClosed)
                 {
-                    if (convertedFrames.Count >= totalFrameCount) break;
-                    frame = targetFrames.Dequeue();
+                    for (int offset = 0; offset < frame.pixels.Length; offset += writeBuffer.Length)
+                    {
+                        int count = Math.Min(writeBuffer.Length, frame.pixels.Length - offset);
+                        NativeArray<byte>.Copy(frame.pixels, offset, writeBuffer, 0, count);
+                        input.Write(writeBuffer, 0, count);
+                    }
+                    Interlocked.Increment(ref session.writtenFrameCount);
                 }
             }
-            catch (InvalidOperationException)
+            catch (IOException)
             {
-                await UniTask.Yield(PlayerLoopTiming.Update);
-                continue;
+                //ffmpeg가 먼저 종료됨. 남은 프레임은 버리고 버퍼만 반환 (원인은 ffmpeg 종료 후 로그로 남김)
+                isInputClosed = true;
             }
-            if (frame.data == null)
+            finally
             {
-                //Debug.LogWarning("Null 파일!");
-                continue;
+                ReleaseFrame(frame);
             }
-            Texture2D outputTexture = new Texture2D(GameManager.Instance.ScreenWidth, GameManager.Instance.ScreenHeight, TextureFormat.RGBA32, false);
-            frame.data = RenderTextureToTexture2D((RenderTexture)frame.data, ref outputTexture);
-            convertedFrames.Enqueue(frame);
         }
-    }
-    Texture2D RenderTextureToTexture2D(RenderTexture target, ref Texture2D result)
-    {
-        //읽어보면 좋은글:
-        //https://medium.com/google-developers/real-time-image-capture-in-unity-458de1364a4c
-        //https://forum.unity.com/threads/rendertexture-to-texture2d-too-slow.693850/
-
-
-        //방법 1.
-        //GPU 병목구간
-        //RenderTexture.active, ReadPixels은 메인스레드에서만 동작가능
-        //코루틴을 통해 여러 스래드에서 gpu에게 ReadPixels을 한번에 요청이 가능 할까?
-        RenderTexture.active = target;
-        result.ReadPixels(GameManager.Instance.ScreenRect, 0, 0);
-        result.name = target.name;
-        result.Apply();
-
-        //방법 2.
-        //코드 출처 - https://forum.unity.com/threads/any-way-to-readpixels-from-another-thread-so-as-to-not-block-the-main-thread.1421267/
-        //에러: UnityException: get_activeColorSpace can only be called from the main thread.
-        /*AsyncGPUReadback.Request(rTex, 0, TextureFormat.RGBA32, (AsyncGPUReadbackRequest request) =>
+        try
         {
-            if (request.hasError)
-                Debug.LogError("GPU readback error.");
-            else if (tex != null)
-            {
-                // copy all data into a regular, CPU-accessible texture.
-                //You might want to just fetch the data for a specific pixel from GetData directly,
-                // or use one of the overloads to request a specific rect in the texture.
-                var temp = request.GetData<byte>();
-                tex.LoadRawTextureData(temp);
-                tex.Apply();
-                temp.Dispose();
-            }
-        });*/
-
-        //방법 3. 4.
-        //오류 회색 이미지가 저장됨
-        /*RenderTexture.active = rTex;
-        Graphics.CopyTexture(rTex, tex);
-        //Graphics.ConvertTexture(rTex, tex);
-        tex.name = rTex.name;
-        await UniTask.Yield();
-        tex.Apply();*/
-
-        //방법 5.
-        //코드 출처 - https://forum.unity.com/threads/using-copytexture-from-rendertexture-to-texture2d-not-working.502451/#post-6981458
-        //에러: UnityException: Request_Internal_Texture_1 can only be called from the main thread.
-        /*await AsyncGPUReadback.Request(rTex, 0, (AsyncGPUReadbackRequest asyncAction) =>
-        {
-            tex.SetPixelData(asyncAction.GetData<byte>(), 0);
-            tex.Apply();
-        });*/
-
-        return result;
-    }
-    async UniTaskVoid Texture2DFrameToPixelData(Queue<FrameInfo> targetFrames, Queue<FrameInfo> pixelDataOfFrames, int totalFrameCount)
-    {
-        //Debug.Log($"3번 작업자: {Task.CurrentId}사로 입장!");
-        //3. 변환된 Texture2D 픽셀데이터로 변환
-        while (!flushCTS.IsCancellationRequested)
-        {
-            FrameInfo frame;
-            try
-            {
-                lock (targetFrames)
-                {
-                    if (pixelDataOfFrames.Count >= totalFrameCount) break;
-                    frame = targetFrames.Dequeue();
-                }
-            }
-            catch (InvalidOperationException)
-            {
-                await UniTask.Yield(PlayerLoopTiming.Update);
-                continue;
-            }
-            if (frame.data == null)
-            {
-                //Debug.LogWarning("Null 파일!");
-                await UniTask.Yield(PlayerLoopTiming.Update);
-                continue;
-            }
-            while (!flushCTS.IsCancellationRequested)
-            {
-                try
-                {
-                    frame.data = ((Texture2D)frame.data).GetPixelData<byte>(0).ToArray();
-                    break;
-                }
-                catch (UnityException)
-                {
-                    await UniTask.Yield(PlayerLoopTiming.Update);
-                    continue;
-                }
-            }
-            lock (pixelDataOfFrames)
-                pixelDataOfFrames.Enqueue(frame);
+            input.Close();
         }
-
-    }
-    async UniTaskVoid PixelDataFrameToPNG(Queue<FrameInfo> targetFrames, Queue<FrameInfo> encodedFrames, int totalFrameCount)
-    {
-        //Debug.Log($"4번 작업자: {Task.CurrentId}사로 입장!");
-        //4. 프레임 픽셀데이터 PNG로 인코딩
-        while (!flushCTS.IsCancellationRequested)
+        catch (IOException)
         {
-            FrameInfo frame;
-            try
-            {
-                lock (targetFrames)
-                {
-                    if (encodedFrames.Count >= totalFrameCount) break;
-                    frame = targetFrames.Dequeue();
-                }
-            }
-            catch (InvalidOperationException)
-            {
-                await UniTask.Yield(PlayerLoopTiming.Update);
-                continue;
-            }
-            if (frame.data == null)
-            {
-                //Debug.LogWarning("Null 파일!");
-                await UniTask.Yield(PlayerLoopTiming.Update);
-                continue;
-            }
-            frame.data = ImageConversion.EncodeArrayToPNG((byte[])frame.data, GraphicsFormat.R8G8B8A8_SRGB, (uint)GameManager.Instance.ScreenWidth, (uint)GameManager.Instance.ScreenHeight);
-            lock (encodedFrames)
-                encodedFrames.Enqueue(frame);
         }
+        session.process.WaitForExit();
+        session.ExitCode = session.process.ExitCode;
+        session.process.Dispose();
+        if (isInputClosed || session.ExitCode != 0)
+            Debug.LogError($"ffmpeg가 비정상 종료되었습니다 (exit code: {session.ExitCode}, 전달한 프레임: {session.writtenFrameCount}): {session.OutputPath}\n" +
+                $"인자: {session.arguments}\n" +
+                $"ffmpeg 로그:\n{string.Join("\n", session.ffmpegLog)}");
+        else
+            session.IsSucceeded = MoveEncodedVideo(session);
+        lock (activeSessions)
+            activeSessions.Remove(session);
+        session.isDone = true;
     }
-    async UniTaskVoid PNGSaveTask(Queue<FrameInfo> targetFrames, int totalFrameCount, NativeArray<int> saveCount)
-    {
-        //Debug.Log($"5번 작업자: {Task.CurrentId}사로 입장!");
-        //5. 인코딩된 프레임 .png 파일로 저장
-        while (!flushCTS.IsCancellationRequested && saveCount != null)
-        {
-            FrameInfo frame;
-            try
-            {
-                lock (this)
-                    if (saveCount[0] >= totalFrameCount) break;
-                lock (targetFrames)
-                    frame = targetFrames.Dequeue();
-            }
-            catch (InvalidOperationException)
-            {
-                await UniTask.Yield(PlayerLoopTiming.Update);
-                continue;
-            }
-            if (frame.data == null)
-            {
-                //Debug.LogWarning("Null 파일!");
-                await UniTask.Yield(PlayerLoopTiming.Update);
-                lock (this)
-                    saveCount[0]++;
-                continue;
-            }
-
-            UniTask.RunOnThreadPool(async () =>
-            {
-                await File.WriteAllBytesAsync(frame.path, (byte[])frame.data, flushCTS.Token);
-                lock (this)
-                    saveCount[0]++;
-            }, true, flushCTS.Token).Forget();
-        }
-    }
-    #endregion
 }
