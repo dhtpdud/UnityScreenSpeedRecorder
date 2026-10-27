@@ -13,10 +13,10 @@ public class RecorderManager : OSY.Singleton<RecorderManager>
     public int OptionCaptureTargetFramerate { get; private set; }//FPS
     public int OptionTimescale { get; private set; }
     public bool OptionIsDebug { get; private set; }
-    public int OptionFrameChunkSize { get; private set; }
+    public int OptionFrameChunkSize { get; private set; }//메모리에 동시에 올라갈 수 있는 최대 프레임 수 (1080p 기준 프레임당 약 8MB)
 
-    [ReadOnly(false)] public int capturingRecorderCount;
-    [ReadOnly(false)] public Queue<string> flushDestinationQueue = new Queue<string>();
+    [ReadOnly(false)] public int capturingRecorderCount;    //촬영 중인 녹화기 수
+    [ReadOnly(false)] public int activeRecorderCount;       //촬영 ~ PNG 저장까지 진행 중인 녹화기 수
 
     protected override void Awake()
     {
@@ -58,7 +58,8 @@ public class RecorderManager : OSY.Singleton<RecorderManager>
     }
     public void StartRecordAll()
     {
-        screenRecorders.ForEach(recorder => UniTask.RunOnThreadPool(recorder.CaptureFramesTask, true, destroyCancellationToken).Forget());
+        //모든 녹화기가 같은 프레임에 촬영을 시작하도록 바로 호출
+        screenRecorders.ForEach(recorder => recorder.CaptureFramesTask().Forget());
     }
     public void CapturingSetting()
     {

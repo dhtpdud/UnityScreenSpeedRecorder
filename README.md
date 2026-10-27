@@ -11,13 +11,13 @@
 `canvas`                = 로그용 캔버스 (envRecorder.json의 IsDebug를 통해 On/Off)
 
 ## 코드 빨리가기
-1. [PNG 인코딩 & 저장(Unitask, 멀티스레드) 코드](https://github.com/dhtpdud/UnityScreenRapidFire/blob/main/Assets/Scripts/Singleton/RecorderFlusher.cs)
+1. [GPU 비동기 읽기 & PNG 인코딩 & 저장(AsyncGPUReadback, 멀티스레드) 코드](https://github.com/dhtpdud/UnityScreenRapidFire/blob/main/Assets/Scripts/Singleton/RecorderFlusher.cs)
 
 ## 절차
-1. Time.Timescale을 이용하여 배속촬영을 진행합니다. 촬영된 프레임(RenderTexture)들은 VRAM에 캐싱됩니다.
-2. VRAM에 캐싱되어있는 RenderTexture 프레임들을 Texture2D로 변환하여 RAM으로 캐싱합니다. 이로써 CPU의 다른 스레드에서 해당 프레임 데이터에 접근이 가능해집니다.
-3. PNG 인코딩 & 저장 작업을 진행합니다. 해당 작업은 Unitask(멀티스레드)를 이용하여 빠르게 병렬 처리합니다.
-4. 저장된 PNG 파일들을 비디오 인코더를 사용하여 비디오 파일로 인코딩합니다.
+1. Time.Timescale을 이용하여 배속촬영을 진행합니다. 카메라는 녹화기마다 하나씩 있는 RenderTexture에 렌더링됩니다.
+2. 매 프레임 렌더링 결과를 AsyncGPUReadback으로 RAM에 비동기로 읽어 옵니다. GPU를 멈춰 세우지 않으며, VRAM 사용량도 프레임 수와 관계없이 일정합니다.
+3. 읽어 온 픽셀 데이터는 워커 스레드들이 PNG로 인코딩하여 저장합니다. 촬영과 저장은 동시에 진행되며, 메모리에 올라간 프레임 수가 `FrameChunkSize`에 도달하면 저장이 따라올 때까지 촬영을 잠시 멈춥니다. (멈춘 동안에는 게임 시간도 흐르지 않으므로 프레임이 누락되지 않습니다.)
+4. 저장된 PNG 파일들을 ffmpeg로 영상 인코딩합니다. 실행 폴더의 ffmpeg를 우선 사용하고, 없으면 PATH에 등록된 ffmpeg를 사용합니다.
 
 ## 영상
 https://youtu.be/g2rJE-xJrpw
