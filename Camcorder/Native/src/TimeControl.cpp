@@ -23,6 +23,7 @@ namespace Camcorder
     typedef void (*mono_thread_detach_t)(MonoThread);
     typedef MonoImage (*mono_get_corlib_t)();     //사용 안 함(참고용)
     typedef MonoAssembly (*mono_domain_assembly_open_t)(MonoDomain, const char*);
+    typedef MonoImage (*mono_image_loaded_t)(const char*);
     typedef void (*mono_assembly_foreach_t)(void (*)(void*, void*), void*);
     typedef MonoImage (*mono_assembly_get_image_t)(MonoAssembly);
     typedef const char* (*mono_assembly_name_get_name_t)(void*);
@@ -37,11 +38,12 @@ namespace Camcorder
         mono_get_root_domain_t get_root_domain = nullptr;
         mono_thread_attach_t thread_attach = nullptr;
         mono_domain_assembly_open_t domain_assembly_open = nullptr;
+        mono_image_loaded_t image_loaded = nullptr;
         mono_assembly_get_image_t assembly_get_image = nullptr;
         mono_class_from_name_t class_from_name = nullptr;
         mono_class_get_method_from_name_t class_get_method_from_name = nullptr;
         mono_runtime_invoke_t runtime_invoke = nullptr;
-        bool valid() const { return get_root_domain && domain_assembly_open && assembly_get_image && class_from_name && class_get_method_from_name && runtime_invoke; }
+        bool valid() const { return get_root_domain && (image_loaded || (domain_assembly_open && assembly_get_image)) && class_from_name && class_get_method_from_name && runtime_invoke; }
     };
 
     static MonoApi s_mono;
@@ -81,6 +83,7 @@ namespace Camcorder
         s_mono.get_root_domain = GetProc<mono_get_root_domain_t>(module, "mono_get_root_domain");
         s_mono.thread_attach = GetProc<mono_thread_attach_t>(module, "mono_thread_attach");
         s_mono.domain_assembly_open = GetProc<mono_domain_assembly_open_t>(module, "mono_domain_assembly_open");
+        s_mono.image_loaded = GetProc<mono_image_loaded_t>(module, "mono_image_loaded");
         s_mono.assembly_get_image = GetProc<mono_assembly_get_image_t>(module, "mono_assembly_get_image");
         s_mono.class_from_name = GetProc<mono_class_from_name_t>(module, "mono_class_from_name");
         s_mono.class_get_method_from_name = GetProc<mono_class_get_method_from_name_t>(module, "mono_class_get_method_from_name");
@@ -98,12 +101,20 @@ namespace Camcorder
                 s_mono.thread_attach(s_mono.get_root_domain());
             s_monoAttached = true;
         }
-        MonoAssembly assembly = s_mono.domain_assembly_open(s_mono.get_root_domain(), "UnityEngine.CoreModule");
-        if (!assembly)
-            assembly = s_mono.domain_assembly_open(s_mono.get_root_domain(), "UnityEngine");
-        if (!assembly)
-            return false;
-        MonoImage image = s_mono.assembly_get_image(assembly);
+        //이미 로드된 어셈블리를 이름으로 찾음 (mono_domain_assembly_open은 파일 경로를 받으므로 이름만으로는 실패할 수 있음)
+        MonoImage image = nullptr;
+        if (s_mono.image_loaded)
+        {
+            image = s_mono.image_loaded("UnityEngine.CoreModule");   // Unity 2017.2+
+            if (!image)
+                image = s_mono.image_loaded("UnityEngine");          // 구버전
+        }
+        if (!image && s_mono.domain_assembly_open && s_mono.assembly_get_image)
+        {
+            MonoAssembly assembly = s_mono.domain_assembly_open(s_mono.get_root_domain(), "UnityEngine.CoreModule");
+            if (assembly)
+                image = s_mono.assembly_get_image(assembly);
+        }
         if (!image)
             return false;
 

@@ -49,10 +49,10 @@ public sealed class FfmpegEncoder : IDisposable
         string args =
             $"-y -hide_banner -loglevel error " +
             $"-f rawvideo -pixel_format {pixFmt} -video_size {width}x{height} -framerate {settings.Fps} -i pipe:0 " +
-            $"-vf vflip -an {codecArgs} -pix_fmt yuv420p " +
+            $"-an {codecArgs} -pix_fmt yuv420p " +
             (string.IsNullOrWhiteSpace(settings.ExtraFfmpegArgs) ? "" : settings.ExtraFfmpegArgs + " ") +
             $"\"{settings.OutputPath}\"";
-        // 주: DXGI 백버퍼는 위→아래 순서지만, 알파 처리/일부 플립 모델에서 상하가 뒤집혀 보이는 경우가 있어 vflip로 맞춥니다.
+        // DXGI 백버퍼와 ffmpeg rawvideo는 모두 위→아래 행 순서이므로 뒤집지 않습니다.
 
         var psi = new ProcessStartInfo(encoder._ffmpegPath, args)
         {
