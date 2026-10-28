@@ -29,5 +29,9 @@
 
   "//stability": "안정성",
   "FreezeTimeoutMs": 10000,
-  "CloseTargetWhenDone": true
+  "CloseTargetWhenDone": true,
+
+  "//plugin": "앱을 실행해서 녹화할 때 앱 폴더에 BepInEx 5 + 캠코더 플러그인이 없거나 다른 버전이면 자동으로 설치",
+  "AutoInstallPlugin": true,
+  "PluginConnectTimeoutMs": 90000
 }

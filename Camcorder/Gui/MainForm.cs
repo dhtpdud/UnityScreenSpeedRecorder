@@ -7,10 +7,12 @@ using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Windows.Forms;
+using UnityCamcorder.Install;
 
 namespace UnityCamcorderGui
 {
     // 설정을 고르고 UnityCamcorder.exe를 자식 프로세스로 실행한 뒤, 콘솔 출력을 읽어 진행 상황을 보여 줍니다.
+    // 녹화할 앱 폴더에 BepInEx 5 + 캠코더 플러그인이 없으면 녹화 전에 자동으로 설치합니다.
     public sealed class MainForm : Form
     {
         private static readonly string[] Codecs =
@@ -33,6 +35,10 @@ namespace UnityCamcorderGui
         private readonly RadioButton _attachRadio = new RadioButton { Text = "이미 켜진 앱에 연결", AutoSize = true };
         private readonly ComboBox _processCombo = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
         private readonly Button _processRefresh = new Button { Text = "새로고침", AutoSize = true };
+        private readonly Label _pluginLabel = new Label { AutoSize = true, Margin = new Padding(3, 7, 3, 3), Text = "" };
+        private readonly Button _pluginInstall = new Button { Text = "설치/업데이트", AutoSize = true };
+        private readonly Button _pluginUninstall = new Button { Text = "제거", AutoSize = true };
+        private readonly Timer _pluginRefresh = new Timer { Interval = 400 };
 
         // --- 촬영 카메라 ---
         private readonly Button _loadCamerasButton = new Button { Text = "카메라 불러오기", AutoSize = true };
@@ -110,6 +116,7 @@ namespace UnityCamcorderGui
             WireEvents();
             UpdateEnabledState();
             RefreshProcesses();
+            RefreshPluginStatus();
         }
 
         // ------------------------------------------------------------------ 화면 구성
@@ -131,11 +138,12 @@ namespace UnityCamcorderGui
             AddRow(target, _launchRadio, _exeBox, _exeBrowse);
             AddRow(target, Indent(new Label { Text = "실행 인자 (선택)", AutoSize = true, Anchor = AnchorStyles.Left }), _argsBox, null);
             AddRow(target, _attachRadio, _processCombo, _processRefresh);
+            AddRow(target, Caption("플러그인"), _pluginLabel, Flow(_pluginInstall, _pluginUninstall));
             root.Controls.Add(Group("1. 녹화할 유니티 앱", target));
 
             // 2. 촬영 카메라
             var cameras = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 1, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
-            cameras.Controls.Add(Flow(_loadCamerasButton, Hint("앱을 켠 뒤 카메라 목록을 불러옵니다. (Mono로 빌드된 앱만)")));
+            cameras.Controls.Add(Flow(_loadCamerasButton, Hint("앱을 켠 뒤 카메라 목록을 불러옵니다.")));
             cameras.Controls.Add(_cameraList);
             cameras.Controls.Add(_cameraHint);
             root.Controls.Add(Group("2. 촬영 카메라 (선택)", cameras));
@@ -306,8 +314,12 @@ namespace UnityCamcorderGui
             _framesRadio.CheckedChanged += (s, e) => UpdateEnabledState();
             _untilEndRadio.CheckedChanged += (s, e) => UpdateEnabledState();
             _processCombo.DropDown += (s, e) => { if (_processCombo.Items.Count == 0) RefreshProcesses(); };
-            _processCombo.SelectedIndexChanged += (s, e) => { if (_processCombo.SelectedIndex >= 0) _attachRadio.Checked = true; };
-            _exeBox.TextChanged += (s, e) => { if (_exeBox.Focused) _launchRadio.Checked = true; };
+            _processCombo.SelectedIndexChanged += (s, e) => { if (_processCombo.SelectedIndex >= 0) _attachRadio.Checked = true; RefreshPluginStatusSoon(); };
+            _exeBox.TextChanged += (s, e) => { if (_exeBox.Focused) _launchRadio.Checked = true; RefreshPluginStatusSoon(); };
+            _launchRadio.CheckedChanged += (s, e) => RefreshPluginStatusSoon();
+            _pluginRefresh.Tick += (s, e) => { _pluginRefresh.Stop(); RefreshPluginStatus(); };
+            _pluginInstall.Click += (s, e) => InstallPluginNow();
+            _pluginUninstall.Click += (s, e) => UninstallPlugin();
 
             _exeBrowse.Click += (s, e) => BrowseExe();
             _processRefresh.Click += (s, e) => RefreshProcesses();
@@ -347,6 +359,7 @@ namespace UnityCamcorderGui
                          _framesRadio, _untilEndRadio, _codecCombo, _qualityBox, _ffmpegBox, _ffmpegBrowse, _closeTargetCheck })
                 c.Enabled = idle;
             _exeBox.Enabled = _exeBrowse.Enabled = _argsBox.Enabled = idle && _launchRadio.Checked;
+            _pluginInstall.Enabled = _pluginUninstall.Enabled = idle && CurrentTargetExe() != null;
             _processCombo.Enabled = _processRefresh.Enabled = idle && _attachRadio.Checked;
             _secondsBox.Enabled = idle && _secondsRadio.Checked;
             _framesBox.Enabled = idle && _framesRadio.Checked;
@@ -519,6 +532,10 @@ namespace UnityCamcorderGui
 
             SaveUiToSettings();
 
+            _logBox.Clear();
+            if (!EnsurePlugin())
+                return;
+
             string configPath;
             try { configPath = config.Write("gui-run.json"); }
             catch (Exception ex) { Warn($"설정 파일을 쓸 수 없습니다:\n{ex.Message}"); return; }
@@ -546,7 +563,6 @@ namespace UnityCamcorderGui
             };
 
             ResetRunState(config.Fps);
-            _logBox.Clear();
             AppendLog($"녹화 준비: {(config.TargetExe ?? $"PID {config.TargetPid}")} → {output}");
             try
             {
@@ -622,6 +638,144 @@ namespace UnityCamcorderGui
             _detailLabel.Text = "";
         }
 
+        // ------------------------------------------------------------------ BepInEx + 캠코더 플러그인
+
+        private static string ToolDir => AppDomain.CurrentDomain.BaseDirectory;
+
+        // 지금 고른 대상의 exe 경로 (모르면 null)
+        private string? CurrentTargetExe()
+        {
+            if (_launchRadio.Checked)
+            {
+                string exe = _exeBox.Text.Trim().Trim('"');
+                return exe.Length > 0 && File.Exists(exe) ? exe : null;
+            }
+            return (_processCombo.SelectedItem as ProcessItem)?.ImagePath;
+        }
+
+        private void RefreshPluginStatusSoon()
+        {
+            _pluginRefresh.Stop();
+            _pluginRefresh.Start();
+        }
+
+        private void RefreshPluginStatus()
+        {
+            string? exe = CurrentTargetExe();
+            if (exe == null)
+            {
+                _pluginLabel.Text = "녹화할 앱을 고르면 BepInEx와 캠코더 플러그인 설치 상태를 보여 줍니다.";
+                _pluginLabel.ForeColor = SystemColors.GrayText;
+            }
+            else
+            {
+                try { ShowPluginState(PluginInstaller.Inspect(exe, ToolDir)); }
+                catch (Exception ex) { _pluginLabel.Text = "설치 상태를 확인하지 못했습니다: " + ex.Message; _pluginLabel.ForeColor = Color.Firebrick; }
+            }
+            UpdateEnabledState();
+        }
+
+        private void ShowPluginState(AppInstallState state)
+        {
+            _pluginLabel.Text = state.Describe();
+            _pluginLabel.ForeColor = state.Problem != null ? Color.Firebrick : state.Ready ? Color.ForestGreen : Color.DarkOrange;
+        }
+
+        // 녹화/카메라 불러오기 전에: 앱 폴더에 BepInEx + 플러그인이 없거나 다른 버전이면 설치. 이어서 진행해도 되면 true
+        private bool EnsurePlugin()
+        {
+            string? exe = CurrentTargetExe();
+            if (exe == null)
+                return true;   // 경로를 알 수 없는 앱: 캠코더가 연결을 시도하며 알려 줌
+            AppInstallState state;
+            try { state = PluginInstaller.Inspect(exe, ToolDir); }
+            catch (Exception ex) { Warn("설치 상태를 확인하지 못했습니다:\n" + ex.Message); return false; }
+            ShowPluginState(state);
+            if (state.Problem != null)
+            {
+                Warn(state.Problem);
+                return false;
+            }
+            if (state.Ready)
+                return true;
+
+            bool running = _attachRadio.Checked || PluginInstaller.IsRunning(exe);
+            if (running && state.BepInExVersion != null && state.PluginInstalled)
+            {
+                // 켜진 앱은 플러그인 파일을 바꿀 수 없고 바꿔도 다시 켜야 적용됨: 지금 로드된 플러그인으로 진행
+                AppendLog("참고: 앱 폴더의 캠코더 플러그인이 이 캠코더와 다른 파일입니다. 앱을 다시 켜면 녹화 전에 자동으로 바꿉니다.");
+                return true;
+            }
+
+            try
+            {
+                Cursor = Cursors.WaitCursor;
+                state = PluginInstaller.Install(exe, ToolDir, AppendLog);
+            }
+            catch (Exception ex) when (ex is InvalidOperationException || ex is IOException || ex is UnauthorizedAccessException)
+            {
+                Warn("BepInEx/캠코더 플러그인을 설치하지 못했습니다:\n" + ex.Message);
+                return false;
+            }
+            finally { Cursor = Cursors.Default; }
+            ShowPluginState(state);
+
+            if (running)
+            {
+                // 플러그인은 앱이 켜질 때 로드되므로, 켜진 앱에는 다시 켜야 적용됨: 다음에는 앱을 직접 실행해서 녹화하도록 바꿔 둠
+                _exeBox.Text = exe;
+                _launchRadio.Checked = true;
+                Warn("앱 폴더에 BepInEx와 캠코더 플러그인을 설치했습니다.\n\n" +
+                     "이미 켜져 있는 앱에는 바로 적용되지 않습니다. 앱을 닫은 뒤 다시 '녹화 시작'(또는 '카메라 불러오기')을 누르면 " +
+                     "앱을 새로 실행해서 녹화합니다.");
+                return false;
+            }
+            return true;
+        }
+
+        private void InstallPluginNow()
+        {
+            string? exe = CurrentTargetExe();
+            if (exe == null) { Warn("녹화할 앱을 먼저 골라 주세요."); return; }
+            _logBox.Clear();
+            try
+            {
+                Cursor = Cursors.WaitCursor;
+                AppInstallState state = PluginInstaller.Install(exe, ToolDir, AppendLog);
+                ShowPluginState(state);
+                if (PluginInstaller.IsRunning(exe))
+                    AppendLog("앱이 켜져 있습니다. 앱을 다시 시작해야 플러그인이 적용됩니다.");
+                SetStatus("설치했습니다.", Color.ForestGreen);
+            }
+            catch (Exception ex) when (ex is InvalidOperationException || ex is IOException || ex is UnauthorizedAccessException)
+            {
+                Warn("설치하지 못했습니다:\n" + ex.Message);
+                RefreshPluginStatus();
+            }
+            finally { Cursor = Cursors.Default; }
+        }
+
+        private void UninstallPlugin()
+        {
+            string? exe = CurrentTargetExe();
+            if (exe == null) { Warn("앱을 먼저 골라 주세요."); return; }
+            if (MessageBox.Show(this,
+                    "이 앱 폴더에서 캠코더 플러그인을 지웁니다.\nBepInEx도 캠코더가 설치했고 다른 BepInEx 플러그인이 없으면 함께 지웁니다.\n\n" + exe,
+                    Text, MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK)
+                return;
+            _logBox.Clear();
+            try
+            {
+                PluginInstaller.Uninstall(exe, AppendLog);
+                SetStatus("제거했습니다.", SystemColors.ControlText);
+            }
+            catch (Exception ex) when (ex is InvalidOperationException || ex is IOException || ex is UnauthorizedAccessException)
+            {
+                Warn("제거하지 못했습니다:\n" + ex.Message);
+            }
+            RefreshPluginStatus();
+        }
+
         // ------------------------------------------------------------------ 촬영 카메라 목록
 
         private readonly System.Collections.Generic.List<CameraItem> _loadedCameras = new System.Collections.Generic.List<CameraItem>();
@@ -637,6 +791,10 @@ namespace UnityCamcorderGui
             if (!FillTarget(config))
                 return;
             SaveUiToSettings();
+
+            _logBox.Clear();
+            if (!EnsurePlugin())
+                return;
 
             string configPath;
             try { configPath = config.Write("gui-list.json"); }
@@ -663,7 +821,6 @@ namespace UnityCamcorderGui
 
             _loadedCameras.Clear();
             _loadedPid = 0;
-            _logBox.Clear();
             AppendLog(_launchRadio.Checked ? "앱을 실행하고 카메라 목록을 불러옵니다..." : "앱에 연결해 카메라 목록을 불러옵니다...");
             try { process.Start(); }
             catch (Exception ex) { Warn($"UnityCamcorder.exe를 실행하지 못했습니다:\n{ex.Message}"); return; }
@@ -683,8 +840,9 @@ namespace UnityCamcorderGui
                 int.TryParse(parts[1], out _loadedPid);
                 return;
             }
-            if (parts[0] == "@camera" && parts.Length >= 10)
+            if (parts[0] == "@camera" && parts.Length >= 11)
             {
+                // id, 가로, 세로, 켜짐, 메인, 자체RT, depth, 디스플레이, URP오버레이, 이름 (RecordingSession.ListCameras)
                 var item = new CameraItem
                 {
                     InstanceId = ParseInt(parts[1]),
@@ -695,7 +853,8 @@ namespace UnityCamcorderGui
                     OwnTarget = parts[6] == "1",
                     Depth = float.TryParse(parts[7], NumberStyles.Float, CultureInfo.InvariantCulture, out float depth) ? depth : 0,
                     Display = ParseInt(parts[8]),
-                    Name = string.Join("\t", parts.Skip(9)),
+                    Overlay = parts[9] == "1",
+                    Name = string.Join("\t", parts.Skip(10)),
                 };
                 _loadedCameras.Add(item);
                 return;
@@ -748,7 +907,7 @@ namespace UnityCamcorderGui
             }
             else if (code == 2)
             {
-                SetStatus("카메라를 골라 찍을 수 없습니다: " + (_cameraListReason ?? "IL2CPP 빌드 등") + " 화면 전체로 녹화됩니다.", Color.DarkOrange);
+                SetStatus("카메라를 골라 찍을 수 없습니다: " + (_cameraListReason ?? "앱이 응답하지 않음") + " 화면 전체로 녹화됩니다.", Color.DarkOrange);
             }
             else
             {
@@ -758,6 +917,7 @@ namespace UnityCamcorderGui
             _cameraListReason = null;
             UpdateCameraHint();
             UpdateEnabledState();
+            RefreshPluginStatus();
             if (_closeAfterExit) Close();
         }
 
@@ -791,7 +951,7 @@ namespace UnityCamcorderGui
                 UpdateProgress();
                 return;
             }
-            if (line.Contains("후킹 완료"))
+            if (line.Contains("플러그인 연결 완료"))
             {
                 if (!_stopSent) SetStatus("녹화 중...", Color.Firebrick);
                 return;
@@ -854,6 +1014,7 @@ namespace UnityCamcorderGui
             }
             AppendLog($"캠코더 종료 (코드 {code})");
             UpdateEnabledState();
+            RefreshPluginStatus();
 
             if (_closeAfterExit) Close();
         }
@@ -972,6 +1133,7 @@ namespace UnityCamcorderGui
             int width = Math.Max(LogicalToDeviceUnits(200), _split.Panel1.ClientSize.Width - LogicalToDeviceUnits(40));
             _statusLabel.MaximumSize = new Size(width, 0);
             _detailLabel.MaximumSize = new Size(width, 0);
+            _pluginLabel.MaximumSize = new Size(Math.Max(LogicalToDeviceUnits(200), width - LogicalToDeviceUnits(260)), 0);
         }
 
         private void AppendLog(string line)

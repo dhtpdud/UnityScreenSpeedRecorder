@@ -15,6 +15,7 @@ namespace UnityCamcorderGui
         public string Name { get; set; } = "";
         public string Title { get; set; } = "";
         public bool IsUnity { get; set; }
+        public string? ImagePath { get; set; }   // exe 전체 경로 (플러그인 설치 확인용, 모르면 null)
 
         public override string ToString()
         {
@@ -33,6 +34,7 @@ namespace UnityCamcorderGui
         public bool Enabled { get; set; }
         public bool IsMain { get; set; }
         public bool OwnTarget { get; set; }
+        public bool Overlay { get; set; }       // URP 오버레이 카메라 (베이스 카메라 영상에 함께 찍힘)
         public float Depth { get; set; }
         public int Display { get; set; }
 
@@ -42,6 +44,7 @@ namespace UnityCamcorderGui
             if (IsMain) notes.Add("메인");
             if (!Enabled) notes.Add("꺼져 있음 → 촬영 중에만 켬");
             if (OwnTarget) notes.Add("자체 RenderTexture");
+            if (Overlay) notes.Add("URP 오버레이: 혼자 못 찍고 베이스 카메라 영상에 함께 들어감");
             if (Display != 0) notes.Add($"Display {Display + 1}");
             return $"{Name}   {Width}x{Height}" + (notes.Count > 0 ? $"   ({string.Join(", ", notes)})" : "");
         }
@@ -60,12 +63,14 @@ namespace UnityCamcorderGui
                 {
                     if (p.Id == self || p.MainWindowHandle == IntPtr.Zero)
                         continue;
+                    string? image = GetImagePath(p.Id);
                     items.Add(new ProcessItem
                     {
                         Pid = p.Id,
                         Name = p.ProcessName,
                         Title = p.MainWindowTitle,
-                        IsUnity = LooksLikeUnity(p.Id),
+                        IsUnity = LooksLikeUnity(image),
+                        ImagePath = image,
                     });
                 }
                 catch { /* 접근 불가 프로세스는 건너뜀 */ }
@@ -78,9 +83,8 @@ namespace UnityCamcorderGui
         }
 
         // 유니티 빌드는 exe 옆에 UnityPlayer.dll 또는 "<exe이름>_Data" 폴더가 있습니다.
-        private static bool LooksLikeUnity(int pid)
+        private static bool LooksLikeUnity(string? exe)
         {
-            string? exe = GetImagePath(pid);
             if (exe == null) return false;
             string dir = Path.GetDirectoryName(exe) ?? "";
             return File.Exists(Path.Combine(dir, "UnityPlayer.dll"))

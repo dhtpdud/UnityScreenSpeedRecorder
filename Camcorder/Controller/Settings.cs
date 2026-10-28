@@ -40,7 +40,10 @@ public sealed class Settings
     public int FreezeTimeoutMs { get; set; } = 10000;         // 이 시간 동안 새 프레임이 없으면 멈춘 것으로 보고 마무리
     public bool CloseTargetWhenDone { get; set; } = true;     // 녹화가 끝나면 대상 앱을 종료
 
-    [JsonIgnore] public string? GraphicsApiOverride { get; set; }  // "d3d11"/"d3d12" (현재는 자동 감지만 사용)
+    // --- 플러그인 ---
+    // 앱을 실행해서 녹화할 때 앱 폴더에 BepInEx + 캠코더 플러그인이 없거나 다른 버전이면 자동으로 설치
+    public bool AutoInstallPlugin { get; set; } = true;
+    public int PluginConnectTimeoutMs { get; set; } = 90000;  // 앱 안의 플러그인이 연결될 때까지 기다리는 시간 (앱 로딩 포함)
 
     public static Settings Load(string path)
     {

@@ -14,12 +14,18 @@
     <PublishSingleFile>true</PublishSingleFile>
     <InvariantGlobalization>true</InvariantGlobalization>
     <!-- 파일 속성에 표시되는 정보 (제조사·설명이 비어 있으면 백신 오탐이 늘어남) -->
-    <Version>1.1.0</Version>
-    <ApplicationIcon>..\Native\res\app.ico</ApplicationIcon>
+    <Version>2.0.0</Version>
+    <ApplicationIcon>..\res\app.ico</ApplicationIcon>
     <Company>UnityCamcorder (github.com/dhtpdud/UnityScreenSpeedRecorder)</Company>
     <Product>UnityCamcorder - Unity app speed recorder</Product>
     <Copyright>Copyright (C) dhtpdud</Copyright>
-    <Description>UnityCamcorder recorder: records Unity apps chosen by the user and encodes video with ffmpeg</Description>
+    <Description>UnityCamcorder recorder: controls the UnityCamcorder BepInEx plugin in a Unity app and encodes video with ffmpeg</Description>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 플러그인과 같이 쓰는 공유 메모리 규약, 창 프로그램과 같이 쓰는 BepInEx/플러그인 설치 -->
+    <Compile Include="..\Shared\CamcorderProtocol.cs" Link="Shared\CamcorderProtocol.cs" />
+    <Compile Include="..\Shared\PluginInstaller.cs" Link="Shared\PluginInstaller.cs" />
+  </ItemGroup>
 
 </Project>

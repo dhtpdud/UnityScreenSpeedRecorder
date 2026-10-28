@@ -72,13 +72,16 @@ crashlytics-build.properties
 /[Aa]ssets/[Ss]treamingAssets/aa/*
 
 # UnityCamcorder (외부 캠코더) 빌드 산출물
-/Camcorder/Native/build-*/
 /Camcorder/Controller/bin/
 /Camcorder/Controller/obj/
+/Camcorder/Gui/bin/
+/Camcorder/Gui/obj/
+/Camcorder/Plugin/bin/
+/Camcorder/Plugin/obj/
 /Camcorder/dist/
+/Camcorder/build/
 
 # UnityCamcorder의 C# 프로젝트 파일은 Unity 자동생성 csproj가 아니므로 추적
 !/Camcorder/Controller/UnityCamcorder.csproj
 !/Camcorder/Gui/UnityCamcorderGui.csproj
-/Camcorder/Gui/bin/
-/Camcorder/Gui/obj/
+!/Camcorder/Plugin/UnityCamcorderPlugin.csproj
