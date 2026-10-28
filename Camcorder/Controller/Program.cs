@@ -1,7 +1,14 @@
+using System.Text;
 using UnityCamcorder;
 
 // 외부 캠코더: 유니티 앱(2018.1~6000.x)을 실행/연결해 배속 촬영하고, 결과를 정상 속도 영상으로 저장합니다.
 // 유니티 앱 내부 모드가 아니라 독립 exe이므로, 대상이 갑자기 꺼지거나 멈춰도 지금까지의 프레임으로 영상을 마무리합니다.
+
+// GUI 등 다른 프로그램이 출력을 읽을 때 한글이 깨지지 않도록, 파이프로 나갈 때는 UTF-8로 바로바로 내보냄
+if (Console.IsOutputRedirected)
+    Console.SetOut(new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false)) { AutoFlush = true });
+if (Console.IsErrorRedirected)
+    Console.SetError(new StreamWriter(Console.OpenStandardError(), new UTF8Encoding(false)) { AutoFlush = true });
 
 if (args.Contains("--help") || args.Contains("-h"))
 {
@@ -48,9 +55,27 @@ if (args.Contains("--keep-open")) settings.CloseTargetWhenDone = false;
 // 주입기/DLL 위치 (기본: exe 옆. x64/, x86/ 하위 폴더에 각각 둠)
 string toolDir = GetOption(args, "--tools") ?? AppContext.BaseDirectory;
 
+// 중지 요청: Ctrl+C(한 번 더 누르면 강제 종료) 또는 표준 입력으로 "stop" 한 줄 (GUI가 사용)
+using var stop = new CancellationTokenSource();
+Console.CancelKeyPress += (_, e) =>
+{
+    if (stop.IsCancellationRequested) return;
+    e.Cancel = true;
+    stop.Cancel();
+};
+if (Console.IsInputRedirected)
+{
+    new Thread(() =>
+    {
+        string? line;
+        while ((line = Console.In.ReadLine()) != null)
+            if (line.Trim().Equals("stop", StringComparison.OrdinalIgnoreCase)) { stop.Cancel(); break; }
+    }) { IsBackground = true }.Start();
+}
+
 try
 {
-    var session = new RecordingSession(settings, toolDir);
+    var session = new RecordingSession(settings, toolDir, stop.Token);
     return session.Run();
 }
 catch (Exception ex)
@@ -99,6 +124,7 @@ static void PrintHelp()
   --target-args <문자열>  대상 앱에 전달할 실행 인자
   --tools <폴더>          주입기/DLL 폴더 (x64/, x86/ 하위 폴더 포함, 기본 exe 옆)
   --keep-open             녹화 후 대상 앱을 종료하지 않음
+                          (녹화 중 Ctrl+C 또는 표준 입력 ""stop""으로 중지하면 그때까지의 영상을 마무리)
   --config <경로>         설정 파일 경로
   --help                  이 도움말");
 }

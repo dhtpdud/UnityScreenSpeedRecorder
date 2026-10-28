@@ -1,6 +1,6 @@
 name: UnityCamcorder 빌드
 
-# 외부 캠코더(주입 DLL + 주입기 + C# 캠코더)를 Windows에서 빌드해 배포용 zip으로 묶습니다.
+# 외부 캠코더(주입 DLL + 주입기 + C# 캠코더 + 창 프로그램)를 Windows에서 빌드해 배포용 zip으로 묶습니다.
 on:
   push:
     branches: ["**"]
@@ -34,6 +34,10 @@ jobs:
       # --- C# 캠코더 (단일 파일, 자체 포함) ---
       - name: 캠코더 publish
         run: dotnet publish Camcorder/Controller/UnityCamcorder.csproj -c Release -o Camcorder/dist
+
+      # --- 창 프로그램 (UnityCamcorder.exe를 실행·관리하는 GUI, .NET Framework 4.8) ---
+      - name: 창 프로그램 publish
+        run: dotnet publish Camcorder/Gui/UnityCamcorderGui.csproj -c Release -o Camcorder/dist
 
       # --- 배포 폴더 구성 ---
       - name: 배포 폴더 구성

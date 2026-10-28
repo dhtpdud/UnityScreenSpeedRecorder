@@ -16,7 +16,8 @@
 ## 구성
 
 ```
-UnityCamcorder.exe          캠코더 본체 (x64, .NET 자체 포함 단일 파일)
+UnityCamcorderGui.exe       쉬운 사용을 위한 창 프로그램 (더블클릭해서 실행)
+UnityCamcorder.exe          캠코더 본체 (x64, .NET 자체 포함 단일 파일, 명령줄)
 camcorder.json              설정 파일 (exe 옆에 두면 자동 사용)
 x64/UnityCamcorderHook.dll  64비트 대상용 캡처 DLL
 x64/Inject.exe              64비트 대상용 주입기
@@ -34,6 +35,20 @@ ffmpeg.exe                  (직접 두거나 PATH에 있어야 함)
   (원본 프로젝트가 쓰는 `Assets/StreamingAssets/ffmpeg/ffmpeg.zip` 안의 ffmpeg를 풀어서 써도 됩니다.)
 
 ## 사용법
+
+### 창으로 쓰기 (추천)
+
+`UnityCamcorderGui.exe`를 더블클릭합니다. (Windows 10/11 기본 .NET Framework 4.8로 실행되어 따로 설치할 것이 없습니다.)
+
+1. **녹화할 유니티 앱**: "앱을 실행해서 녹화"에서 exe를 고르거나(창에 끌어다 놓아도 됨), "이미 켜진 앱에 연결"에서 목록의 앱을 고릅니다. 유니티 앱은 목록 맨 위에 `[유니티]`로 표시됩니다.
+2. **결과 영상**: 저장할 파일, FPS, 길이(초 / 프레임 / 중지할 때까지), 코덱, 화질을 정합니다. ffmpeg.exe가 캠코더 옆이나 PATH에 없으면 직접 골라 줍니다.
+3. **● 녹화 시작**을 누르면 진행률, 배속, 기록이 실시간으로 보입니다. **■ 중지**를 누르면 지금까지 찍은 프레임으로 영상을 정상 마무리합니다. (한 번 더 누르면 강제 종료)
+4. 끝나면 **영상 열기**, **저장 폴더 열기**로 바로 확인합니다.
+
+창은 같은 폴더의 `UnityCamcorder.exe`를 실행해 녹화하므로 두 파일과 `x64/`, `x86/` 폴더를 함께 두어야 합니다.
+마지막 설정은 `%LOCALAPPDATA%\UnityCamcorder\gui.json`에 저장되어 다음에 그대로 열립니다.
+
+### 명령줄로 쓰기
 
 1. 설정 파일 만들기:
    ```
@@ -72,6 +87,8 @@ UnityCamcorder.exe --process App --out out.mp4 --frames 600
 | `CloseTargetWhenDone` | `--keep-open` | 녹화 후 대상 앱 종료 여부 |
 | `FreezeTimeoutMs` | — | 이 시간 동안 새 프레임이 없으면 멈춘 것으로 보고 마무리 |
 
+녹화 중 `Ctrl+C`를 누르거나 표준 입력으로 `stop` 한 줄을 보내면, 지금까지의 프레임으로 영상을 정상 마무리합니다. (`Ctrl+C`를 한 번 더 누르면 바로 종료)
+
 ## 안정성 (대상이 꺼지거나 멈출 때)
 
 - 캠코더는 프레임을 받는 즉시 ffmpeg로 흘려보내므로, 어느 시점에 중단되어도 그때까지의 영상이 **재생 가능한 완성본**으로 저장됩니다.
@@ -98,6 +115,11 @@ cmake --build build-x64
 ### 캠코더(C#)
 ```
 dotnet publish Camcorder/Controller/UnityCamcorder.csproj -c Release -o dist
+```
+
+### 창 프로그램(C#, WinForms, .NET Framework 4.8)
+```
+dotnet publish Camcorder/Gui/UnityCamcorderGui.csproj -c Release -o dist
 ```
 
 GitHub Actions(`.github/workflows/camcorder.yml`)가 위 과정을 자동으로 수행해 배포용 zip을 만듭니다.

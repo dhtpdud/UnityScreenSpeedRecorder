@@ -8,11 +8,13 @@ public sealed class RecordingSession
 {
     private readonly Settings _settings;
     private readonly string _toolDir;
+    private readonly CancellationToken _stop;
 
-    public RecordingSession(Settings settings, string toolDir)
+    public RecordingSession(Settings settings, string toolDir, CancellationToken stop = default)
     {
         _settings = settings;
         _toolDir = toolDir;
+        _stop = stop;
     }
 
     public int Run()
@@ -30,8 +32,10 @@ public sealed class RecordingSession
         Log("DLL 주입 완료, 후킹 대기 중...");
 
         if (!WaitFor(() => shared.StatusFlags.HasFlag(SharedControl.Status.Hooked) && shared.BackbufferWidth > 0,
-                     30000, () => target.HasExited))
+                     30000, () => target.HasExited || _stop.IsCancellationRequested))
         {
+            if (_stop.IsCancellationRequested)
+                return Fail("후킹 전에 중지 요청을 받았습니다.");
             if (target.HasExited)
                 return Fail("후킹 전에 대상이 종료되었습니다.");
             return Fail($"후킹 시간 초과. 상태={shared.StatusFlags}, 오류={shared.LastError}");
@@ -139,6 +143,12 @@ public sealed class RecordingSession
                         Log("목표 프레임 수 도달.");
                         goto finish;
                     }
+                }
+
+                if (_stop.IsCancellationRequested)
+                {
+                    Log("중지 요청을 받았습니다. 지금까지 캡처한 프레임으로 영상을 마무리합니다.");
+                    goto finish;
                 }
 
                 // 멈춤/크래시 감지
