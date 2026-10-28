@@ -62,21 +62,30 @@ namespace Camcorder
         m_sessionId = -1;
     }
 
-    bool FrameRing::BeginWrite(int& slotIndex, uint8_t*& dest, int64_t& capacity)
+    bool FrameRing::BeginWrite(int& slotIndex, uint8_t*& dest, int64_t& capacity, bool wait)
     {
         if (!g_shared || !m_base)
             return false;
         //링 버퍼에 빈 슬롯이 있는가? write - read < slotCount 이면 OK
-        int64_t inFlight = g_shared->writeCount - g_shared->readCount;
-        if (inFlight >= m_slotCount)
-            return false;   //캠코더가 못 따라옴 → 이번 프레임은 버림
+        while (g_shared->writeCount - g_shared->readCount >= m_slotCount)
+        {
+            if (!wait)
+                return false;   //캠코더가 못 따라옴 → 이번 프레임은 버림
+            //캠코더가 슬롯을 비울 때까지 대기. 녹화가 끝났거나 캠코더가 죽었으면 포기
+            if (!IsRecordRequested() || g_shared->sessionId != m_sessionId)
+                return false;
+            if (m_slotFree)
+                WaitForSingleObject(m_slotFree, 100);
+            else
+                Sleep(1);
+        }
         slotIndex = (int)(g_shared->writeCount % m_slotCount);
         dest = m_base + (int64_t)slotIndex * m_slotSize;
         capacity = m_slotSize;
         return true;
     }
 
-    void FrameRing::EndWrite(int slotIndex, int width, int height, int dxgiFormat, int bytesPerPixel, int64_t dataSize)
+    void FrameRing::EndWrite(int slotIndex, int width, int height, int dxgiFormat, int bytesPerPixel, int64_t dataSize, int stream)
     {
         if (!g_shared)
             return;
@@ -87,6 +96,7 @@ namespace Camcorder
         slot.bytesPerPixel = bytesPerPixel;
         slot.dataSize = dataSize;
         slot.frameIndex = m_nextFrame++;
+        slot.stream = stream;
         //쓰기 카운터를 올린 뒤 캠코더를 깨움 (읽기 쪽은 writeCount를 보고 슬롯을 집음)
         InterlockedIncrement64(&g_shared->writeCount);
         if (m_frameReady)

@@ -18,10 +18,11 @@ namespace Camcorder
         int SessionId() const { return m_sessionId; }
 
         //빈 슬롯을 하나 얻어 픽셀을 복사하도록 포인터와 슬롯 번호를 돌려줍니다.
-        //빈 슬롯이 없으면(캠코더가 못 따라오면) false. 이때 Present 훅은 프레임을 버립니다.
-        bool BeginWrite(int& slotIndex, uint8_t*& dest, int64_t& capacity);
-        //복사를 마치고 캠코더에 알립니다.
-        void EndWrite(int slotIndex, int width, int height, int dxgiFormat, int bytesPerPixel, int64_t dataSize);
+        //빈 슬롯이 없으면(캠코더가 못 따라오면) wait=false일 땐 바로 false(프레임 버림),
+        //wait=true일 땐 슬롯이 빌 때까지 기다립니다(배속 촬영: 게임도 함께 기다려 프레임을 버리지 않음).
+        bool BeginWrite(int& slotIndex, uint8_t*& dest, int64_t& capacity, bool wait = false);
+        //복사를 마치고 캠코더에 알립니다. stream = 몇 번째 촬영 카메라의 프레임인지
+        void EndWrite(int slotIndex, int width, int height, int dxgiFormat, int bytesPerPixel, int64_t dataSize, int stream = 0);
 
     private:
         HANDLE m_mapping = nullptr;

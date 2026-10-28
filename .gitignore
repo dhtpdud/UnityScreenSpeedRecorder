@@ -79,3 +79,6 @@ crashlytics-build.properties
 
 # UnityCamcorder의 C# 프로젝트 파일은 Unity 자동생성 csproj가 아니므로 추적
 !/Camcorder/Controller/UnityCamcorder.csproj
+!/Camcorder/Gui/UnityCamcorderGui.csproj
+/Camcorder/Gui/bin/
+/Camcorder/Gui/obj/

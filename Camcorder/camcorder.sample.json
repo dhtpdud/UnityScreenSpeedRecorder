@@ -7,6 +7,9 @@
   "TargetProcessName": "",
   "TargetPid": 0,
 
+  "//cameras": "촬영 카메라: 비우면 화면 전체를 한 영상으로. 이름 또는 #번호를 적으면 카메라마다 영상 따로 (--list-cameras로 확인)",
+  "Cameras": [],
+
   "//output": "결과 영상 설정",
   "OutputPath": "C:\\Recordings\\output.mp4",
   "Fps": 60,

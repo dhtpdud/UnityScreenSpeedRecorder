@@ -38,8 +38,10 @@ public sealed class FfmpegEncoder : IDisposable
         throw new FileNotFoundException("ffmpeg.exe를 찾을 수 없습니다. 설정의 FfmpegPath를 지정하거나 캠코더 exe 옆에 두세요.");
     }
 
-    public static FfmpegEncoder Start(Settings settings, int width, int height, int dxgiFormat)
+    // outputPath: 카메라를 여러 대 찍을 때 카메라마다 다른 파일 (미지정이면 settings.OutputPath)
+    public static FfmpegEncoder Start(Settings settings, int width, int height, int dxgiFormat, string? outputPath = null)
     {
+        outputPath ??= settings.OutputPath;
         var encoder = new FfmpegEncoder(ResolveFfmpeg(settings));
         string pixFmt = PixelFormatFor(dxgiFormat);
         (string name, string codecArgs) = encoder.SelectEncoder(settings);
@@ -51,7 +53,7 @@ public sealed class FfmpegEncoder : IDisposable
             $"-f rawvideo -pixel_format {pixFmt} -video_size {width}x{height} -framerate {settings.Fps} -i pipe:0 " +
             $"-an {codecArgs} -pix_fmt yuv420p " +
             (string.IsNullOrWhiteSpace(settings.ExtraFfmpegArgs) ? "" : settings.ExtraFfmpegArgs + " ") +
-            $"\"{settings.OutputPath}\"";
+            $"\"{outputPath}\"";
         // DXGI 백버퍼와 ffmpeg rawvideo는 모두 위→아래 행 순서이므로 뒤집지 않습니다.
 
         var psi = new ProcessStartInfo(encoder._ffmpegPath, args)
@@ -119,10 +121,23 @@ public sealed class FfmpegEncoder : IDisposable
     };
 
     // GPU 인코더 자동 탐지 (auto일 때) — NVENC → QSV → AMF → libx264 순으로 실제 테스트 인코딩
+    // 자동 선택 결과는 한 번만 테스트하고 재사용 (카메라 여러 대를 찍을 때 매번 테스트하지 않도록)
+    private static (string name, string args)? s_autoChoice;
+    private static int s_autoQuality = -1;
+
     private (string name, string args) SelectEncoder(Settings settings)
     {
         if (!settings.Codec.Equals("auto", StringComparison.OrdinalIgnoreCase))
             return (settings.Codec, $"-c:v {settings.Codec} {QualityArgs(settings.Codec, settings.Quality)}");
+        if (s_autoChoice != null && s_autoQuality == settings.Quality)
+            return s_autoChoice.Value;
+        s_autoQuality = settings.Quality;
+        s_autoChoice = SelectAutoEncoder(settings);
+        return s_autoChoice.Value;
+    }
+
+    private (string name, string args) SelectAutoEncoder(Settings settings)
+    {
 
         int q = settings.Quality;
         var candidates = new (string name, string args)[]

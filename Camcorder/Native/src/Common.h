@@ -16,7 +16,9 @@ namespace Camcorder
 {
     extern CamcorderShared* g_shared;   //캠코더가 만든 제어용 공유 메모리
     extern HWND g_unityWindow;          //유니티 메인 창 (UnityWndClass)
-    extern DWORD g_mainThreadId;        //유니티 메인 창을 가진 스레드 = 유니티 메인 스레드
+    extern DWORD g_mainThreadId;        //처음엔 창 스레드, 틱이 돌면 실제 유니티 메인 스레드
+    extern volatile LONG g_cameraCaptureSession;  //카메라 촬영 중인 sessionId (-1이면 화면 캡처 또는 대기)
+    extern volatile LONG g_tickRegistered;        //메인 스레드 틱을 유니티 이벤트에 등록했으면 1
 
     void Log(const char* format, ...);
     void SetLastErrorText(const char* format, ...);
@@ -33,8 +35,8 @@ namespace Camcorder
     //유니티 메인 창을 찾아 g_unityWindow, g_mainThreadId를 채움
     bool FindUnityWindow();
 
-    //메인 스레드 훅 (PeekMessage/GetMessage)
-    bool InstallMainThreadHooks();
+    //메인 스레드 틱 등록 (Application.onBeforeRender / Canvas.willRenderCanvases). Mono가 아니면 false
+    bool InstallMainThreadTick();
     //Present 후킹 (D3D11/D3D12)
     bool InstallPresentHooks();
 }

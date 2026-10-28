@@ -24,6 +24,8 @@ namespace Camcorder
     static ICapturer* s_capturer = nullptr;
     static FrameRing s_ring;
     static int s_activeSession = -1;
+    static int s_waitingSession = -1;
+    static ULONGLONG s_waitingSince = 0;
     static CRITICAL_SECTION s_presentLock;
     static bool s_presentLockReady = false;
 
@@ -45,8 +47,25 @@ namespace Camcorder
     //녹화 세션 전환 처리: command/sessionId를 보고 링 버퍼를 열거나 닫음
     static void UpdateSession(IDXGISwapChain* swapChain)
     {
-        bool want = IsRecordRequested();
         int session = g_shared ? g_shared->sessionId : 0;
+        bool requested = IsRecordRequested();
+        //메인 스레드 틱이 없거나(IL2CPP 등) 등록했는데 3초 동안 한 번도 돌지 않으면, 이 훅이 직접 세션을 맡아 화면을 실시간으로 캡처
+        if (requested && g_shared->appliedSessionId != session && !HasStatus(ST_MAIN_THREAD))
+        {
+            ULONGLONG now = GetTickCount64();
+            if (s_waitingSession != session)
+            {
+                s_waitingSession = session;
+                s_waitingSince = now;
+            }
+            if (!g_tickRegistered || now - s_waitingSince > 3000)
+            {
+                Log("메인 스레드 틱 없이 세션 %d 시작: 화면을 실시간으로 캡처 (배속 없음)", session);
+                g_shared->appliedSessionId = session;
+            }
+        }
+        //메인 스레드가 이 세션을 처리한 뒤(배속 적용, 촬영 방식 결정)에만, 그리고 카메라 촬영이 아닐 때만 화면을 캡처
+        bool want = requested && g_shared->appliedSessionId == session && g_cameraCaptureSession != session;
 
         if (want && (!s_ring.IsOpen() || session != s_activeSession))
         {

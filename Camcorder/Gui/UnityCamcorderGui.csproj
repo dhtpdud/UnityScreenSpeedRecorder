@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <!-- Windows 10/11에 기본 포함된 .NET Framework 4.8 사용: 별도 런타임 설치 없이 실행되고 exe가 작음 -->
+    <TargetFramework>net48</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <AssemblyName>UnityCamcorderGui</AssemblyName>
+    <RootNamespace>UnityCamcorderGui</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <Prefer32Bit>false</Prefer32Bit>
+    <!-- 리눅스/맥에서도 컴파일 확인이 가능하도록 -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <!-- 파일 속성에 표시되는 정보 (제조사·설명이 비어 있으면 백신 오탐이 늘어남) -->
+    <Version>1.1.0</Version>
+    <ApplicationIcon>..\Native\res\app.ico</ApplicationIcon>
+    <Company>UnityCamcorder (github.com/dhtpdud/UnityScreenSpeedRecorder)</Company>
+    <Product>UnityCamcorder - Unity app speed recorder</Product>
+    <Copyright>Copyright (C) dhtpdud</Copyright>
+    <Description>UnityCamcorder window: settings and start/stop for the UnityCamcorder recorder</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="System.Runtime.Serialization" />
+  </ItemGroup>
+
+</Project>
