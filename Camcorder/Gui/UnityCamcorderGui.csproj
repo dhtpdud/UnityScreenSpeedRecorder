@@ -17,6 +17,7 @@
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <!-- 파일 속성에 표시되는 정보 (제조사·설명이 비어 있으면 백신 오탐이 늘어남) -->
     <Version>1.1.0</Version>
+    <ApplicationIcon>..\Native\res\app.ico</ApplicationIcon>
     <Company>UnityCamcorder (github.com/dhtpdud/UnityScreenSpeedRecorder)</Company>
     <Product>UnityCamcorder - Unity app speed recorder</Product>
     <Copyright>Copyright (C) dhtpdud</Copyright>

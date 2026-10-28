@@ -148,7 +148,9 @@ UnityCamcorder.exe --pid 12345 --cameras "Main Camera,MinimapCamera" --out "C:\r
 
 - 모든 실행 파일과 DLL에 제조사·제품·설명·버전 정보와 매니페스트(관리자 권한 요구 없음)를 넣음
 - 최신 익스플로잇 완화 기법(CFG, ASLR, DEP)을 명시적으로 켜서 정상 소프트웨어와 같은 PE 특성을 갖춤
-- 배포 zip은 GitHub Actions가 이 소스로 직접 빌드 (재현 가능)
+- **재현 가능한 빌드**: 빌드 시각을 파일에 넣지 않고 `Inject.exe`는 버전을 따로 고정해, 소스가 그대로면 업데이트해도 **똑같은 파일(같은 SHA-256)** 입니다.
+  예전에는 빌드마다 새 파일이 되어 백신이 매번 "처음 보는 파일"로 다시 검사했고, 받아 둔 오탐 해제도 다음 빌드에서 소용없어졌습니다.
+  CI가 `Inject.exe`를 두 번 빌드해 같은 파일인지 매번 확인하며, 배포 zip의 `checksums.txt`에 모든 파일의 SHA-256이 있습니다.
 
 > **중요:** 남은 탐지는 전부 `!ml`·`ml.score` 같은 **동작 기반(행위 휴리스틱)** 추정입니다.
 > "다른 프로세스에 DLL을 넣는다"는 행위 자체가 원인이라, 코드 수정만으로는 더 내릴 수 없습니다.
@@ -161,9 +163,11 @@ UnityCamcorder.exe --pid 12345 --cameras "Main Camera,MinimapCamera" --out "C:\r
    - `SIGN_TIMESTAMP_URL`(선택): 타임스탬프 서버 (기본 `http://timestamp.digicert.com`)
 
    서명하면 대부분의 ML 탐지와 SmartScreen 경고가 사라집니다. 인증서는 유료이며, EV 인증서는 즉시 평판을 얻고 OV 인증서는 사용량이 쌓이며 평판이 올라갑니다.
+   (서명에는 서명 시각이 들어가 빌드마다 해시가 달라지지만, 평판이 인증서를 따라가므로 상관없습니다.)
 2. **백신사 오탐 신고 (무료, 보통 수일 내 반영)**: 탐지한 백신사에 파일을 "오탐"으로 직접 제출합니다.
    - Microsoft Defender: <https://www.microsoft.com/en-us/wdsi/filesubmission> (Submission type: *Incorrectly detected as malware*)
    - 그 외 백신도 각자 오탐 신고 페이지가 있습니다 (Bkav, SecureAge, Trapmine 등).
+   - `Inject.exe`는 업데이트해도 같은 파일로 유지되므로 **한 번 해제되면 계속 유효**합니다. 새로 받은 zip의 `checksums.txt`에서 해시가 그대로인지 확인할 수 있습니다.
 3. **내 PC에서 바로 쓰기**: Windows 보안 → 바이러스 및 위협 방지 → 설정 관리 → 제외에 캠코더 폴더를 추가합니다. (직접 빌드했거나 이 저장소의 Actions에서 받은 파일에만 하세요.)
 
 ## 문제 해결

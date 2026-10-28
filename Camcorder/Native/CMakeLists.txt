@@ -20,10 +20,24 @@ if(MSVC)
     endif()
 endif()
 
+# 재현 가능한 빌드: 빌드 시각을 파일에 넣지 않아, 소스가 같으면 매번 똑같은 파일(같은 해시)이 나옴.
+# 백신은 처음 보는 파일을 더 의심하고, 오탐 해제(Microsoft 신고 등)도 파일 해시 단위로 적용되므로
+# 소스가 그대로인 Inject.exe가 빌드마다 새 파일로 바뀌지 않게 합니다.
+if(MSVC)
+    add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:/Brepro>)
+    add_link_options(/Brepro)
+elseif(MINGW)
+    add_link_options(-Wl,--no-insert-timestamp)
+endif()
+
 # 버전 정보 리소스 (제조사·설명·버전). 백신의 일반(ML) 오탐을 줄이고 파일 속성에 정체를 밝힘
 set(CAMCORDER_VERSION "1.2.0.0")
-string(REPLACE "." "," CAMCORDER_VERSION_COMMA "${CAMCORDER_VERSION}")
-function(camcorder_version_resource target description original type manifest)
+# Inject.exe는 따로 고정된 버전을 씀. Injector.cpp나 주입기 리소스(매니페스트·아이콘)를 바꿀 때만 올릴 것
+# (올리면 새 파일이 되어 오탐 해제를 다시 받아야 함)
+set(INJECT_VERSION "1.0.0.0")
+function(camcorder_version_resource target version description original type manifest icon)
+    set(CAMCORDER_VERSION "${version}")
+    string(REPLACE "." "," CAMCORDER_VERSION_COMMA "${version}")
     set(CAMCORDER_FILE_DESCRIPTION "${description}")
     set(CAMCORDER_ORIGINAL_FILENAME "${original}")
     get_filename_component(CAMCORDER_INTERNAL_NAME "${original}" NAME_WE)
@@ -37,6 +51,11 @@ function(camcorder_version_resource target description original type manifest)
         endif()
     else()
         set(CAMCORDER_MANIFEST_LINE "")
+    endif()
+    if(icon)
+        set(CAMCORDER_ICON_LINE "1 ICON \"${icon}\"")
+    else()
+        set(CAMCORDER_ICON_LINE "")
     endif()
     set(rc "${CMAKE_CURRENT_BINARY_DIR}/${target}_version.rc")
     configure_file("${CMAKE_CURRENT_SOURCE_DIR}/res/version.rc.in" "${rc}" @ONLY)
@@ -75,15 +94,15 @@ if(MINGW)
 endif()
 
 set_target_properties(UnityCamcorderHook PROPERTIES PREFIX "" OUTPUT_NAME "UnityCamcorderHook")
-camcorder_version_resource(UnityCamcorderHook
+camcorder_version_resource(UnityCamcorderHook "${CAMCORDER_VERSION}"
     "UnityCamcorder frame capture module (captures Unity camera frames for recording)"
-    "UnityCamcorderHook.dll" "VFT_DLL" "")
+    "UnityCamcorderHook.dll" "VFT_DLL" "" "")
 
 # DLL 주입기 (대상과 같은 비트 수여야 함)
 add_executable(Inject src/Injector.cpp)
-camcorder_version_resource(Inject
+camcorder_version_resource(Inject "${INJECT_VERSION}"
     "UnityCamcorder helper: loads the capture module into the Unity app the user chose to record"
-    "Inject.exe" "VFT_APP" "${CMAKE_CURRENT_SOURCE_DIR}/res/Inject.manifest")
+    "Inject.exe" "VFT_APP" "${CMAKE_CURRENT_SOURCE_DIR}/res/Inject.manifest" "${CMAKE_CURRENT_SOURCE_DIR}/res/app.ico")
 target_compile_definitions(Inject PRIVATE UNICODE _UNICODE)
 if(MINGW)
     target_link_options(Inject PRIVATE -static -static-libgcc -static-libstdc++ -municode)
