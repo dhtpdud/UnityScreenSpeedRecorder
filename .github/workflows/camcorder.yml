@@ -53,6 +53,40 @@ jobs:
           Copy-Item Camcorder/camcorder.sample.json "$dist/camcorder.json"
           Remove-Item "$dist/*.pdb" -ErrorAction SilentlyContinue
 
+      # --- (선택) 코드 서명: 저장소 시크릿에 인증서가 있을 때만 모든 실행 파일·DLL에 서명 ---
+      # Authenticode 서명은 ML/휴리스틱 오탐과 SmartScreen 경고를 줄이는 가장 효과적인 정식 방법입니다.
+      # 서명 인증서(.pfx)를 base64로 인코딩해 SIGN_PFX_BASE64 시크릿에, 비밀번호를 SIGN_PFX_PASSWORD 시크릿에
+      # 넣으면 빌드마다 자동으로 서명됩니다. 시크릿이 없으면 이 단계는 그냥 건너뜁니다(빌드는 그대로 성공).
+      - name: 코드 서명 (인증서 시크릿이 있을 때만)
+        shell: pwsh
+        env:
+          SIGN_PFX_BASE64: ${{ secrets.SIGN_PFX_BASE64 }}
+          SIGN_PFX_PASSWORD: ${{ secrets.SIGN_PFX_PASSWORD }}
+          SIGN_TIMESTAMP_URL: ${{ secrets.SIGN_TIMESTAMP_URL }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:SIGN_PFX_BASE64)) {
+            Write-Host "서명 인증서 시크릿(SIGN_PFX_BASE64)이 없어 코드 서명을 건너뜁니다."
+            Write-Host "백신 오탐을 크게 줄이려면 코드 서명 인증서(.pfx)를 base64로 SIGN_PFX_BASE64 시크릿에,"
+            Write-Host "비밀번호를 SIGN_PFX_PASSWORD 시크릿에 등록하세요. (설정 > Secrets and variables > Actions)"
+            exit 0
+          }
+          $signtool = Get-ChildItem -Path "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match "\\x64\\" } | Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $signtool) { throw "signtool.exe를 찾지 못했습니다 (Windows SDK)." }
+          Write-Host "signtool: $($signtool.FullName)"
+          $pfx = Join-Path $env:RUNNER_TEMP "sign.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:SIGN_PFX_BASE64))
+          $ts = if ([string]::IsNullOrWhiteSpace($env:SIGN_TIMESTAMP_URL)) { "http://timestamp.digicert.com" } else { $env:SIGN_TIMESTAMP_URL }
+          $files = Get-ChildItem "Camcorder/dist" -Recurse -Include *.exe,*.dll | Select-Object -ExpandProperty FullName
+          foreach ($f in $files) {
+            Write-Host "서명: $f"
+            & $signtool.FullName sign /fd sha256 /tr $ts /td sha256 /f $pfx /p $env:SIGN_PFX_PASSWORD $f
+            if ($LASTEXITCODE -ne 0) { throw "서명 실패: $f" }
+            & $signtool.FullName verify /pa $f
+            if ($LASTEXITCODE -ne 0) { throw "서명 검증 실패: $f" }
+          }
+          Remove-Item $pfx -Force
+
       - name: 아티팩트 업로드
         uses: actions/upload-artifact@v4
         with:

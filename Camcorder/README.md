@@ -144,12 +144,27 @@ UnityCamcorder.exe --pid 12345 --cameras "Main Camera,MinimapCamera" --out "C:\r
 이름 끝의 `!ml`, `ml.score`는 머신러닝 추정이라는 뜻이며, 같은 방식을 쓰는 OBS 게임 캡처나 모드 로더도 자주 겪는 문제입니다.
 코드는 모두 이 저장소에 공개되어 있고, 배포 zip은 GitHub Actions가 이 소스로 직접 빌드합니다.
 
-오탐을 줄이기 위해 모든 실행 파일과 DLL에 제조사·제품·설명·버전 정보와 매니페스트(관리자 권한 요구 없음)를 넣었습니다.
-그래도 탐지되면:
+오탐을 줄이기 위해 다음을 적용했습니다.
 
-1. **Microsoft Defender**: [Microsoft 오탐 신고](https://www.microsoft.com/en-us/wdsi/filesubmission)에 파일을 "Incorrectly detected"로 제출하면 보통 며칠 안에 정의가 고쳐집니다. 다른 백신도 각자 오탐 신고 페이지가 있습니다.
-2. **내 PC에서 바로 쓰기**: Windows 보안 → 바이러스 및 위협 방지 → 설정 관리 → 제외에 캠코더 폴더를 추가합니다. (직접 빌드했거나 이 저장소의 Actions에서 받은 파일에만 하세요.)
-3. **완전한 해결**: 코드 서명 인증서(OV/EV)로 `Inject.exe`, `UnityCamcorderHook.dll`, `UnityCamcorder.exe`, `UnityCamcorderGui.exe`에 서명하면 대부분의 ML 탐지와 SmartScreen 경고가 사라집니다. 인증서는 유료이며, 있으면 `signtool sign /fd sha256 /tr http://timestamp.digicert.com /td sha256 /a <파일>` 로 서명합니다.
+- 모든 실행 파일과 DLL에 제조사·제품·설명·버전 정보와 매니페스트(관리자 권한 요구 없음)를 넣음
+- 최신 익스플로잇 완화 기법(CFG, ASLR, DEP)을 명시적으로 켜서 정상 소프트웨어와 같은 PE 특성을 갖춤
+- 배포 zip은 GitHub Actions가 이 소스로 직접 빌드 (재현 가능)
+
+> **중요:** 남은 탐지는 전부 `!ml`·`ml.score` 같은 **동작 기반(행위 휴리스틱)** 추정입니다.
+> "다른 프로세스에 DLL을 넣는다"는 행위 자체가 원인이라, 코드 수정만으로는 더 내릴 수 없습니다.
+> 실제로 효과가 있는 정식 방법은 **코드 서명**과 **백신사 오탐 신고** 두 가지뿐입니다.
+
+1. **코드 서명 (가장 효과적)**: 코드 서명 인증서(OV/EV `.pfx`)가 있으면, CI가 빌드할 때 자동으로 서명하도록 준비해 두었습니다.
+   GitHub 저장소 → Settings → Secrets and variables → Actions 에서 아래 시크릿을 등록하면 이후 모든 빌드가 서명됩니다.
+   - `SIGN_PFX_BASE64`: 인증서 `.pfx`를 base64로 인코딩한 문자열 (`[Convert]::ToBase64String([IO.File]::ReadAllBytes("cert.pfx"))`)
+   - `SIGN_PFX_PASSWORD`: `.pfx` 비밀번호
+   - `SIGN_TIMESTAMP_URL`(선택): 타임스탬프 서버 (기본 `http://timestamp.digicert.com`)
+
+   서명하면 대부분의 ML 탐지와 SmartScreen 경고가 사라집니다. 인증서는 유료이며, EV 인증서는 즉시 평판을 얻고 OV 인증서는 사용량이 쌓이며 평판이 올라갑니다.
+2. **백신사 오탐 신고 (무료, 보통 수일 내 반영)**: 탐지한 백신사에 파일을 "오탐"으로 직접 제출합니다.
+   - Microsoft Defender: <https://www.microsoft.com/en-us/wdsi/filesubmission> (Submission type: *Incorrectly detected as malware*)
+   - 그 외 백신도 각자 오탐 신고 페이지가 있습니다 (Bkav, SecureAge, Trapmine 등).
+3. **내 PC에서 바로 쓰기**: Windows 보안 → 바이러스 및 위협 방지 → 설정 관리 → 제외에 캠코더 폴더를 추가합니다. (직접 빌드했거나 이 저장소의 Actions에서 받은 파일에만 하세요.)
 
 ## 문제 해결
 
