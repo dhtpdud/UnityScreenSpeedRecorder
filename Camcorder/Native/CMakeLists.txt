@@ -23,7 +23,9 @@ target_include_directories(minhook PUBLIC third_party/minhook/include)
 # 주입 DLL
 add_library(UnityCamcorderHook SHARED
     src/DllMain.cpp
+    src/Mono.cpp
     src/TimeControl.cpp
+    src/CameraCapture.cpp
     src/MainThreadHook.cpp
     src/FrameBuffer.cpp
     src/PresentHook.cpp

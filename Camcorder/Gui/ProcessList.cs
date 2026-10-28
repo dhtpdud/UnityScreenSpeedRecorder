@@ -23,6 +23,30 @@ namespace UnityCamcorderGui
         }
     }
 
+    // 앱 안의 카메라 (UnityCamcorder --list-cameras 결과 한 줄)
+    public sealed class CameraItem
+    {
+        public int InstanceId { get; set; }
+        public string Name { get; set; } = "";
+        public int Width { get; set; }
+        public int Height { get; set; }
+        public bool Enabled { get; set; }
+        public bool IsMain { get; set; }
+        public bool OwnTarget { get; set; }
+        public float Depth { get; set; }
+        public int Display { get; set; }
+
+        public override string ToString()
+        {
+            var notes = new List<string>();
+            if (IsMain) notes.Add("메인");
+            if (!Enabled) notes.Add("꺼져 있음 → 촬영 중에만 켬");
+            if (OwnTarget) notes.Add("자체 RenderTexture");
+            if (Display != 0) notes.Add($"Display {Display + 1}");
+            return $"{Name}   {Width}x{Height}" + (notes.Count > 0 ? $"   ({string.Join(", ", notes)})" : "");
+        }
+    }
+
     public static class ProcessList
     {
         // 창이 있는 프로세스만, 유니티 앱을 맨 위에 놓아 반환

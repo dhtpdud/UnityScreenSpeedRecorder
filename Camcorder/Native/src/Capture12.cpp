@@ -153,7 +153,7 @@ namespace Camcorder
 
             int slot; uint8_t* destPtr; int64_t capacity;
             bool wrote = false;
-            if (ring.BeginWrite(slot, destPtr, capacity))
+            if (ring.BeginWrite(slot, destPtr, capacity, HasStatus(ST_TIME_CONTROL)))
             {
                 int64_t outRow = (int64_t)desc.Width * bpp;
                 if (outRow * desc.Height <= capacity)

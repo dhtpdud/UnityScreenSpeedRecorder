@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Runtime.Serialization;
 using System.Runtime.Serialization.Json;
@@ -21,6 +22,7 @@ namespace UnityCamcorderGui
         [DataMember] public int Quality { get; set; } = 23;
         [DataMember] public string FfmpegPath { get; set; } = "";
         [DataMember] public bool CloseTargetWhenDone { get; set; } = true;
+        [DataMember] public List<string> Cameras { get; set; } = new List<string>();   // 체크해 둔 카메라 이름
 
         public static string Folder =>
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "UnityCamcorder");
@@ -33,7 +35,16 @@ namespace UnityCamcorderGui
             {
                 if (File.Exists(FilePath))
                     using (var stream = File.OpenRead(FilePath))
-                        return (GuiSettings?)new DataContractJsonSerializer(typeof(GuiSettings)).ReadObject(stream) ?? new GuiSettings();
+                    {
+                        var loaded = (GuiSettings?)new DataContractJsonSerializer(typeof(GuiSettings)).ReadObject(stream);
+                        if (loaded != null)
+                        {
+                            //역직렬화는 초기값을 채우지 않으므로, 예전 파일에 없던 항목은 직접 채움
+                            loaded.TargetExe ??= ""; loaded.TargetArgs ??= ""; loaded.OutputPath ??= "";
+                            loaded.Codec ??= "auto"; loaded.FfmpegPath ??= ""; loaded.Cameras ??= new List<string>();
+                            return loaded;
+                        }
+                    }
             }
             catch { /* 망가진 파일이면 기본값으로 시작 */ }
             return new GuiSettings();
@@ -67,11 +78,12 @@ namespace UnityCamcorderGui
         [DataMember] public int Quality { get; set; }
         [DataMember(EmitDefaultValue = false)] public string? FfmpegPath { get; set; }
         [DataMember] public bool CloseTargetWhenDone { get; set; }
+        [DataMember] public List<string> Cameras { get; set; } = new List<string>();   // "#instanceId" 또는 카메라 이름
 
-        public string Write()
+        public string Write(string fileName)
         {
             Directory.CreateDirectory(GuiSettings.Folder);
-            string path = Path.Combine(GuiSettings.Folder, "gui-run.json");
+            string path = Path.Combine(GuiSettings.Folder, fileName);
             using (var stream = File.Create(path))
                 new DataContractJsonSerializer(typeof(RunConfig)).WriteObject(stream, this);
             return path;

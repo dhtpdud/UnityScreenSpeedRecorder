@@ -13,6 +13,11 @@ public sealed class Settings
     public string? TargetProcessName { get; set; }
     public int TargetPid { get; set; }
 
+    // --- 촬영 카메라 ---
+    // 비우면 화면에 보이는 그대로(화면에 그리던 카메라 전부) 한 영상으로 찍습니다.
+    // 채우면 카메라마다 영상 하나씩: 카메라 이름 또는 "#instanceId" (UnityCamcorder --list-cameras 로 확인)
+    public List<string> Cameras { get; set; } = new();
+
     // --- 결과 영상 ---
     public string OutputPath { get; set; } = "output.mp4";   // 확장자로 컨테이너(mp4/mkv/webm/mov) 결정
     public int Fps { get; set; } = 60;                        // 결과 영상 프레임레이트(= 촬영 captureFramerate)
@@ -66,6 +71,8 @@ public sealed class Settings
             throw new ArgumentException("대상이 지정되지 않았습니다. TargetExe 또는 TargetProcessName 또는 TargetPid 중 하나를 설정하세요.");
         if (Fps <= 0)
             throw new ArgumentException("Fps는 1 이상이어야 합니다.");
+        if (Cameras.Count > SharedControl.MaxStreams)
+            throw new ArgumentException($"촬영 카메라는 최대 {SharedControl.MaxStreams}대까지 고를 수 있습니다.");
         if (SlotCount is < 2 or > SharedControl.MaxSlots)
             throw new ArgumentException($"SlotCount는 2~{SharedControl.MaxSlots} 사이여야 합니다.");
     }

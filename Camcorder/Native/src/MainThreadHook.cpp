@@ -7,9 +7,15 @@
 
 namespace Camcorder
 {
+    bool EnsureRuntime();
     void ApplyCaptureTiming(int fps);
     void RestoreTiming();
     bool IsTimingApplied();
+    bool StartCameraCapture(int session);
+    void StopCameraCapture();
+    void TickCameraCapture();
+    void HandleCameraListRequest();
+    void ReportScreenSizeIfNeeded();
 
     typedef BOOL (WINAPI* PeekMessageW_t)(LPMSG, HWND, UINT, UINT, UINT);
     static PeekMessageW_t s_originalPeekMessageW = nullptr;
@@ -23,26 +29,36 @@ namespace Camcorder
         if (!HasStatus(ST_MAIN_THREAD))
             AddStatus(ST_MAIN_THREAD);
 
+        if (!g_shared)
+            return;
+        //Mono 런타임 준비(앱 시작 직후면 준비될 때까지 가끔 다시 시도), 카메라 목록 요청 응답
+        EnsureRuntime();
+        ReportScreenSizeIfNeeded();
+        HandleCameraListRequest();
+
         bool wantRecord = IsRecordRequested();
-        int session = g_shared ? g_shared->sessionId : 0;
+        int session = g_shared->sessionId;
 
         if (wantRecord)
         {
-            //새 녹화 세션이 시작되면 시간 제어를 (다시) 적용
-            if (!IsTimingApplied() || session != s_lastHandledSession)
+            //새 녹화 세션: 배속 적용 → 카메라 촬영 준비(안 되면 Present 훅의 화면 캡처) → 처리 완료 표시
+            if (session != s_lastHandledSession)
             {
+                StopCameraCapture();
                 ApplyCaptureTiming(g_shared->fps);
+                StartCameraCapture(session);
+                MemoryBarrier();
+                g_shared->appliedSessionId = session;   // Present 훅은 이 값을 본 뒤에야 화면 캡처를 시작
                 s_lastHandledSession = session;
             }
+            TickCameraCapture();
         }
-        else
+        else if (s_lastHandledSession != -1)
         {
-            //명령이 멈췄거나 캠코더가 죽었으면 원래 속도로 복원
-            if (IsTimingApplied())
-            {
-                RestoreTiming();
-                s_lastHandledSession = -1;
-            }
+            //명령이 멈췄거나 캠코더가 죽었으면 카메라와 속도를 원래대로 복원
+            StopCameraCapture();
+            RestoreTiming();
+            s_lastHandledSession = -1;
         }
     }
 

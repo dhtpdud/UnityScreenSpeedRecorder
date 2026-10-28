@@ -6,8 +6,10 @@
 //C# 쪽(Controller/SharedMemory.cs)의 오프셋과 반드시 같아야 합니다.
 
 #define CAMCORDER_MAGIC 0x524D4355u   // 'UCMR'
-#define CAMCORDER_VERSION 1
+#define CAMCORDER_VERSION 2
 #define CAMCORDER_MAX_SLOTS 64
+#define CAMCORDER_MAX_CAMERAS 64
+#define CAMCORDER_MAX_STREAMS 16
 
 //공유 메모리 / 이벤트 이름 (뒤에 대상 프로세스 PID가 붙음)
 #define CAMCORDER_CONTROL_NAME L"Local\\UnityCamcorder_%lu"
@@ -31,6 +33,15 @@ enum CamcorderStatus : int32_t
     ST_TIME_FAILED = 1 << 5,        //시간 제어 실패 (실시간 캡처로 진행)
     ST_CAPTURING = 1 << 6,          //프레임 캡처 중
     ST_MAIN_THREAD = 1 << 7,        //메인 스레드 훅이 한 번 이상 실행됨
+    ST_CAMERA_CAPTURE = 1 << 8,     //카메라 RenderTexture + AsyncGPUReadback 으로 캡처 중 (화면 백버퍼를 읽지 않음)
+};
+
+//카메라 목록 항목 플래그
+enum CamcorderCameraFlags : int32_t
+{
+    CAMF_ENABLED = 1 << 0,          //카메라 컴포넌트가 켜져 있음
+    CAMF_OWN_TARGET = 1 << 1,       //앱이 이미 자기 RenderTexture로 렌더링 중 (그 텍스처를 그대로 읽음)
+    CAMF_MAIN = 1 << 2,             //Camera.main
 };
 
 enum CamcorderGraphicsApi : int32_t
@@ -49,6 +60,21 @@ struct CamcorderSlot
     int32_t bytesPerPixel;
     int64_t frameIndex;
     int64_t dataSize;
+    int32_t stream;                 //몇 번째 촬영 카메라의 프레임인지 (0부터, 화면 전체 촬영이면 0)
+    int32_t reserved0;
+    int64_t reserved1;
+};
+
+//DLL이 채우는 카메라 목록 항목 (128바이트)
+struct CamcorderCameraInfo
+{
+    int32_t instanceId;             //Object.GetInstanceID()
+    int32_t width;                  //이 카메라를 찍을 때의 영상 크기
+    int32_t height;
+    int32_t flags;                  //CamcorderCameraFlags
+    float depth;                    //Camera.depth (렌더링 순서)
+    int32_t targetDisplay;
+    char name[104];                 //GameObject 이름 (UTF-8)
 };
 
 struct CamcorderShared
@@ -82,18 +108,29 @@ struct CamcorderShared
     int64_t reserved1;              // 112
     char runtimeInfo[256];          // 120
     char lastError[512];            // 376
-    CamcorderSlot slots[CAMCORDER_MAX_SLOTS]; // 888
+    CamcorderSlot slots[CAMCORDER_MAX_SLOTS]; // 888 (48 x 64)
+    // 카메라 선택
+    int32_t cameraListRequest;      // 3960 캠코더 → DLL: 값을 올리면 DLL이 카메라 목록을 다시 채움
+    int32_t cameraListDone;         // 3964 DLL → 캠코더: 처리한 cameraListRequest 값
+    int32_t cameraCount;            // 3968 DLL → 캠코더: 목록 개수 (-1이면 카메라 촬영 불가: IL2CPP 등)
+    int32_t streamCount;            // 3972 캠코더 → DLL: 촬영할 카메라 수 (0이면 화면 전체를 한 영상으로)
+    int32_t streamCameraIds[CAMCORDER_MAX_STREAMS]; // 3976 촬영할 카메라 instanceId (stream 번호 순)
+    CamcorderCameraInfo cameras[CAMCORDER_MAX_CAMERAS]; // 4040
 };
 #pragma pack(pop)
 
-static_assert(sizeof(CamcorderSlot) == 32, "CamcorderSlot size");
+static_assert(sizeof(CamcorderSlot) == 48, "CamcorderSlot size");
+static_assert(sizeof(CamcorderCameraInfo) == 128, "CamcorderCameraInfo size");
 static_assert(offsetof(CamcorderShared, status) == 56, "status offset");
 static_assert(offsetof(CamcorderShared, presentCount) == 64, "presentCount offset");
 static_assert(offsetof(CamcorderShared, writeCount) == 96, "writeCount offset");
 static_assert(offsetof(CamcorderShared, runtimeInfo) == 120, "runtimeInfo offset");
 static_assert(offsetof(CamcorderShared, lastError) == 376, "lastError offset");
 static_assert(offsetof(CamcorderShared, slots) == 888, "slots offset");
-static_assert(sizeof(CamcorderShared) == 888 + 32 * CAMCORDER_MAX_SLOTS, "CamcorderShared size");
+static_assert(offsetof(CamcorderShared, cameraListRequest) == 3960, "cameraListRequest offset");
+static_assert(offsetof(CamcorderShared, streamCameraIds) == 3976, "streamCameraIds offset");
+static_assert(offsetof(CamcorderShared, cameras) == 4040, "cameras offset");
+static_assert(sizeof(CamcorderShared) == 4040 + 128 * CAMCORDER_MAX_CAMERAS, "CamcorderShared size");
 
 //DXGI_FORMAT → 픽셀당 바이트 수 (지원하지 않는 형식은 0)
 inline int CamcorderBytesPerPixel(int dxgiFormat)

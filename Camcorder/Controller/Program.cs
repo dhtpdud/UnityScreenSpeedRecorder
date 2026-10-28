@@ -50,6 +50,7 @@ ApplyOverride(args, "--duration", v => settings.DurationSeconds = double.Parse(v
 ApplyOverride(args, "--codec", v => settings.Codec = v);
 ApplyOverride(args, "--quality", v => settings.Quality = int.Parse(v));
 ApplyOverride(args, "--ffmpeg", v => settings.FfmpegPath = v);
+ApplyOverride(args, "--cameras", v => settings.Cameras = v.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList());
 if (args.Contains("--keep-open")) settings.CloseTargetWhenDone = false;
 
 // 주입기/DLL 위치 (기본: exe 옆. x64/, x86/ 하위 폴더에 각각 둠)
@@ -76,6 +77,12 @@ if (Console.IsInputRedirected)
 try
 {
     var session = new RecordingSession(settings, toolDir, stop.Token);
+    if (args.Contains("--list-cameras"))
+    {
+        // 목록만 보고 앱은 켜 둠 (이어서 --pid 로 녹화)
+        settings.CloseTargetWhenDone = false;
+        return session.ListCameras();
+    }
     return session.Run();
 }
 catch (Exception ex)
@@ -110,6 +117,12 @@ static void PrintHelp()
   --target <exe경로>      유니티 앱을 실행하고 녹화
   --process <이름>        이미 떠 있는 프로세스 이름으로 연결
   --pid <PID>             이미 떠 있는 프로세스 PID로 연결
+
+촬영 카메라 (Mono로 빌드된 앱):
+  --list-cameras          앱 안의 카메라 목록만 보여 주고 끝냄 (앱은 켜 둠)
+  --cameras <목록>        찍을 카메라 이름 또는 #번호를 쉼표로 (예: ""Main Camera,#12345"")
+                          카메라마다 영상이 따로 저장됨: out_카메라이름.mp4
+                          지정하지 않으면 화면에 보이는 카메라 전부를 한 영상으로 촬영
 
 결과 영상:
   --out <경로>            저장 경로 (확장자로 컨테이너 결정: .mp4 .mkv .webm .mov)

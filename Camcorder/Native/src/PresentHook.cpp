@@ -45,8 +45,9 @@ namespace Camcorder
     //녹화 세션 전환 처리: command/sessionId를 보고 링 버퍼를 열거나 닫음
     static void UpdateSession(IDXGISwapChain* swapChain)
     {
-        bool want = IsRecordRequested();
         int session = g_shared ? g_shared->sessionId : 0;
+        //메인 스레드가 이 세션을 처리한 뒤(배속 적용, 촬영 방식 결정)에만, 그리고 카메라 촬영이 아닐 때만 화면을 캡처
+        bool want = IsRecordRequested() && g_shared->appliedSessionId == session && g_cameraCaptureSession != session;
 
         if (want && (!s_ring.IsOpen() || session != s_activeSession))
         {

@@ -33,6 +33,17 @@ namespace UnityCamcorderGui
         private readonly ComboBox _processCombo = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
         private readonly Button _processRefresh = new Button { Text = "새로고침", AutoSize = true };
 
+        // --- 촬영 카메라 ---
+        private readonly Button _loadCamerasButton = new Button { Text = "카메라 불러오기", AutoSize = true };
+        private readonly CheckedListBox _cameraList = new CheckedListBox { Dock = DockStyle.Fill, Height = 110, CheckOnClick = true, IntegralHeight = false };
+        private readonly Label _cameraHint = new Label
+        {
+            AutoSize = true, ForeColor = SystemColors.GrayText, Margin = new Padding(3, 4, 3, 0),
+            Text = "체크하지 않으면 화면에 보이는 그대로 한 영상으로 찍습니다. 여러 대를 체크하면 카메라마다 영상을 따로 저장합니다.",
+        };
+        private Process? _cameraLoader;
+        private int _cameraListPid;
+
         // --- 영상 ---
         private readonly TextBox _outputBox = new TextBox { Dock = DockStyle.Fill };
         private readonly Button _outputBrowse = new Button { Text = "찾아보기...", AutoSize = true };
@@ -71,6 +82,7 @@ namespace UnityCamcorderGui
         private long _capturedFrames;
         private int _runFps;
         private string? _savedPath;
+        private readonly System.Collections.Generic.List<string> _savedPaths = new System.Collections.Generic.List<string>();
         private string? _failure;
         private DateTime _startedAt;
         private DateTime? _encodingStartedAt;
@@ -81,8 +93,8 @@ namespace UnityCamcorderGui
             Font = new Font("Malgun Gothic", 9f);
             AutoScaleMode = AutoScaleMode.Font;
             StartPosition = FormStartPosition.CenterScreen;
-            MinimumSize = new Size(720, 640);
-            Size = new Size(820, 760);
+            MinimumSize = new Size(760, 780);
+            Size = new Size(860, 900);
             try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
 
             BuildLayout();
@@ -100,6 +112,7 @@ namespace UnityCamcorderGui
             root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
             // 1. 녹화할 앱
@@ -108,6 +121,13 @@ namespace UnityCamcorderGui
             AddRow(target, Indent(new Label { Text = "실행 인자 (선택)", AutoSize = true, Anchor = AnchorStyles.Left }), _argsBox, null);
             AddRow(target, _attachRadio, _processCombo, _processRefresh);
             root.Controls.Add(Group("1. 녹화할 유니티 앱", target));
+
+            // 2. 촬영 카메라
+            var cameras = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 1, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
+            cameras.Controls.Add(Flow(_loadCamerasButton, Hint("앱을 켠 뒤 카메라 목록을 불러옵니다. (Mono로 빌드된 앱만)")));
+            cameras.Controls.Add(_cameraList);
+            cameras.Controls.Add(_cameraHint);
+            root.Controls.Add(Group("2. 촬영 카메라 (선택)", cameras));
 
             // 2. 결과 영상
             var video = NewGrid();
@@ -120,7 +140,7 @@ namespace UnityCamcorderGui
             AddRow(video, Caption("ffmpeg.exe"), _ffmpegBox, _ffmpegBrowse);
             AddRow(video, new Label(), Hint("비워 두면 UnityCamcorder.exe 옆 → PATH 순으로 자동으로 찾습니다."), null);
             AddRow(video, new Label(), _closeTargetCheck, null);
-            root.Controls.Add(Group("2. 결과 영상", video));
+            root.Controls.Add(Group("3. 결과 영상", video));
 
             // 실행 버튼 + 진행
             var run = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, AutoSize = true };
@@ -204,6 +224,7 @@ namespace UnityCamcorderGui
             _qualityBox.Value = Clamp(_settings.Quality, _qualityBox);
             _ffmpegBox.Text = _settings.FfmpegPath;
             _closeTargetCheck.Checked = _settings.CloseTargetWhenDone;
+            UpdateCameraHint();
         }
 
         private void SaveUiToSettings()
@@ -220,6 +241,8 @@ namespace UnityCamcorderGui
             _settings.Quality = (int)_qualityBox.Value;
             _settings.FfmpegPath = _ffmpegBox.Text.Trim().Trim('"');
             _settings.CloseTargetWhenDone = _closeTargetCheck.Checked;
+            if (_cameraList.Items.Count > 0)
+                _settings.Cameras = _cameraList.CheckedItems.Cast<CameraItem>().Select(c => c.Name).ToList();
             _settings.Save();
         }
 
@@ -245,9 +268,12 @@ namespace UnityCamcorderGui
             _processRefresh.Click += (s, e) => RefreshProcesses();
             _outputBrowse.Click += (s, e) => BrowseOutput();
             _ffmpegBrowse.Click += (s, e) => BrowseFfmpeg();
+            _loadCamerasButton.Click += (s, e) => LoadCameras();
+            _cameraList.ItemCheck += (s, e) => BeginInvoke(new Action(UpdateCameraHint));
+            _outputBox.TextChanged += (s, e) => UpdateCameraHint();
             _startButton.Click += (s, e) => StartRecording();
             _stopButton.Click += (s, e) => StopRecording();
-            _openVideoButton.Click += (s, e) => { if (_savedPath != null) ShellOpen(_savedPath, null); };
+            _openVideoButton.Click += (s, e) => { foreach (var path in _savedPaths) ShellOpen(path, null); };
             _openFolderButton.Click += (s, e) => OpenFolder();
             _clock.Tick += (s, e) => UpdateDetail();
 
@@ -267,7 +293,7 @@ namespace UnityCamcorderGui
             FormClosing += OnFormClosing;
         }
 
-        private bool IsRunning => _camcorder != null;
+        private bool IsRunning => _camcorder != null || _cameraLoader != null;
 
         private void UpdateEnabledState()
         {
@@ -280,8 +306,10 @@ namespace UnityCamcorderGui
             _secondsBox.Enabled = idle && _secondsRadio.Checked;
             _framesBox.Enabled = idle && _framesRadio.Checked;
             _startButton.Enabled = idle;
-            _stopButton.Enabled = !idle;
-            _openVideoButton.Enabled = idle && _savedPath != null && File.Exists(_savedPath);
+            _openVideoButton.Enabled = idle && _savedPaths.Count > 0 && File.Exists(_savedPaths[0]);
+            _loadCamerasButton.Enabled = idle;
+            _cameraList.Enabled = idle;
+            _stopButton.Enabled = _camcorder != null;
             _openFolderButton.Enabled = idle && !string.IsNullOrWhiteSpace(_outputBox.Text);
         }
 
@@ -356,14 +384,39 @@ namespace UnityCamcorderGui
 
         // ------------------------------------------------------------------ 녹화 시작/중지
 
-        private void StartRecording()
+        private string? FindCamcorderExe()
         {
             string camcorderExe = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "UnityCamcorder.exe");
-            if (!File.Exists(camcorderExe))
+            if (File.Exists(camcorderExe))
+                return camcorderExe;
+            Warn($"UnityCamcorder.exe를 찾을 수 없습니다.\n이 프로그램과 같은 폴더에 있어야 합니다:\n{camcorderExe}");
+            return null;
+        }
+
+        // 화면에서 고른 대상(실행할 exe 또는 켜진 앱)을 설정에 채움. 문제가 있으면 알리고 false
+        private bool FillTarget(RunConfig config)
+        {
+            if (_launchRadio.Checked)
             {
-                Warn($"UnityCamcorder.exe를 찾을 수 없습니다.\n이 프로그램과 같은 폴더에 있어야 합니다:\n{camcorderExe}");
-                return;
+                string exe = _exeBox.Text.Trim().Trim('"');
+                if (exe.Length == 0) { Warn("녹화할 유니티 앱(exe)을 골라 주세요."); return false; }
+                if (!File.Exists(exe)) { Warn($"앱 파일을 찾을 수 없습니다:\n{exe}"); return false; }
+                config.TargetExe = exe;
+                config.TargetArgs = _argsBox.Text.Trim().Length > 0 ? _argsBox.Text.Trim() : null;
+                return true;
             }
+            if (!(_processCombo.SelectedItem is ProcessItem item)) { Warn("연결할 앱을 목록에서 골라 주세요. (목록이 비어 있으면 새로고침)"); return false; }
+            try { using (var p = Process.GetProcessById(item.Pid)) if (p.HasExited) throw new InvalidOperationException(); }
+            catch { Warn("고른 앱이 이미 종료되었습니다. 새로고침 후 다시 골라 주세요."); RefreshProcesses(); return false; }
+            config.TargetPid = item.Pid;
+            return true;
+        }
+
+        private void StartRecording()
+        {
+            string? camcorderExe = FindCamcorderExe();
+            if (camcorderExe == null)
+                return;
 
             var config = new RunConfig
             {
@@ -374,21 +427,8 @@ namespace UnityCamcorderGui
             };
 
             // 대상
-            if (_launchRadio.Checked)
-            {
-                string exe = _exeBox.Text.Trim().Trim('"');
-                if (exe.Length == 0) { Warn("녹화할 유니티 앱(exe)을 골라 주세요."); return; }
-                if (!File.Exists(exe)) { Warn($"앱 파일을 찾을 수 없습니다:\n{exe}"); return; }
-                config.TargetExe = exe;
-                config.TargetArgs = _argsBox.Text.Trim().Length > 0 ? _argsBox.Text.Trim() : null;
-            }
-            else
-            {
-                if (!(_processCombo.SelectedItem is ProcessItem item)) { Warn("연결할 앱을 목록에서 골라 주세요. (목록이 비어 있으면 새로고침)"); return; }
-                try { using (var p = Process.GetProcessById(item.Pid)) if (p.HasExited) throw new InvalidOperationException(); }
-                catch { Warn("고른 앱이 이미 종료되었습니다. 새로고침 후 다시 골라 주세요."); RefreshProcesses(); return; }
-                config.TargetPid = item.Pid;
-            }
+            if (!FillTarget(config))
+                return;
 
             // 저장 경로
             string output = _outputBox.Text.Trim().Trim('"');
@@ -427,10 +467,15 @@ namespace UnityCamcorderGui
                 return;
             }
 
+            // 촬영 카메라: 목록을 불러온 그 앱에 연결할 땐 번호(#id)로, 아니면 이름으로 지정
+            var checkedCameras = _cameraList.CheckedItems.Cast<CameraItem>().ToList();
+            bool sameApp = config.TargetPid != 0 && config.TargetPid == _cameraListPid;
+            config.Cameras = checkedCameras.Select(c => sameApp ? "#" + c.InstanceId.ToString(CultureInfo.InvariantCulture) : c.Name).ToList();
+
             SaveUiToSettings();
 
             string configPath;
-            try { configPath = config.Write(); }
+            try { configPath = config.Write("gui-run.json"); }
             catch (Exception ex) { Warn($"설정 파일을 쓸 수 없습니다:\n{ex.Message}"); return; }
 
             var psi = new ProcessStartInfo(camcorderExe, $"--config \"{configPath}\"")
@@ -523,6 +568,7 @@ namespace UnityCamcorderGui
             _capturedFrames = 0;
             _runFps = fps;
             _savedPath = null;
+            _savedPaths.Clear();
             _failure = null;
             _startedAt = DateTime.Now;
             _encodingStartedAt = null;
@@ -530,6 +576,157 @@ namespace UnityCamcorderGui
             _progress.Value = 0;
             _detailLabel.Text = "";
         }
+
+        // ------------------------------------------------------------------ 촬영 카메라 목록
+
+        private readonly System.Collections.Generic.List<CameraItem> _loadedCameras = new System.Collections.Generic.List<CameraItem>();
+        private int _loadedPid;
+
+        // UnityCamcorder.exe --list-cameras 로 앱 안의 카메라 목록을 받아 옴 (앱은 켜 둠)
+        private void LoadCameras()
+        {
+            string? camcorderExe = FindCamcorderExe();
+            if (camcorderExe == null)
+                return;
+            var config = new RunConfig { Fps = (int)_fpsBox.Value, OutputPath = "camera-list.mp4", CloseTargetWhenDone = false };
+            if (!FillTarget(config))
+                return;
+            SaveUiToSettings();
+
+            string configPath;
+            try { configPath = config.Write("gui-list.json"); }
+            catch (Exception ex) { Warn($"설정 파일을 쓸 수 없습니다:\n{ex.Message}"); return; }
+
+            var process = new Process
+            {
+                StartInfo = new ProcessStartInfo(camcorderExe, $"--config \"{configPath}\" --list-cameras")
+                {
+                    UseShellExecute = false, CreateNoWindow = true,
+                    RedirectStandardOutput = true, RedirectStandardError = true,
+                    StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8,
+                    WorkingDirectory = Path.GetDirectoryName(camcorderExe)!,
+                },
+                EnableRaisingEvents = true,
+            };
+            process.OutputDataReceived += (s, e) => { if (e.Data != null) Post(() => OnCameraLine(e.Data)); };
+            process.ErrorDataReceived += (s, e) => { if (e.Data != null) Post(() => AppendLog("! " + e.Data)); };
+            process.Exited += (s, e) =>
+            {
+                try { process.WaitForExit(); } catch { }
+                Post(() => OnCameraLoaderExited(process));
+            };
+
+            _loadedCameras.Clear();
+            _loadedPid = 0;
+            _logBox.Clear();
+            AppendLog(_launchRadio.Checked ? "앱을 실행하고 카메라 목록을 불러옵니다..." : "앱에 연결해 카메라 목록을 불러옵니다...");
+            try { process.Start(); }
+            catch (Exception ex) { Warn($"UnityCamcorder.exe를 실행하지 못했습니다:\n{ex.Message}"); return; }
+            _cameraLoader = process;
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+            SetStatus("카메라 목록을 불러오는 중...", SystemColors.ControlText);
+            _progress.Style = ProgressBarStyle.Marquee;
+            UpdateEnabledState();
+        }
+
+        private void OnCameraLine(string line)
+        {
+            string[] parts = line.Split('\t');
+            if (parts[0] == "@target" && parts.Length >= 2)
+            {
+                int.TryParse(parts[1], out _loadedPid);
+                return;
+            }
+            if (parts[0] == "@camera" && parts.Length >= 10)
+            {
+                var item = new CameraItem
+                {
+                    InstanceId = ParseInt(parts[1]),
+                    Width = ParseInt(parts[2]),
+                    Height = ParseInt(parts[3]),
+                    Enabled = parts[4] == "1",
+                    IsMain = parts[5] == "1",
+                    OwnTarget = parts[6] == "1",
+                    Depth = float.TryParse(parts[7], NumberStyles.Float, CultureInfo.InvariantCulture, out float depth) ? depth : 0,
+                    Display = ParseInt(parts[8]),
+                    Name = string.Join("\t", parts.Skip(9)),
+                };
+                _loadedCameras.Add(item);
+                return;
+            }
+            AppendLog(line);
+            var fail = FailLine.Match(line);
+            if (fail.Success)
+                _failure = fail.Groups[1].Value.Trim();
+        }
+
+        private void OnCameraLoaderExited(Process process)
+        {
+            if (!ReferenceEquals(process, _cameraLoader)) return;
+            int code;
+            try { code = process.ExitCode; } catch { code = -1; }
+            process.Dispose();
+            _cameraLoader = null;
+            _progress.Style = ProgressBarStyle.Continuous;
+            _progress.Value = 0;
+
+            if (code == 0)
+            {
+                // 이전에 체크해 둔 카메라는 이름으로 다시 체크
+                var keep = new System.Collections.Generic.HashSet<string>(
+                    _cameraList.Items.Count > 0 ? _cameraList.CheckedItems.Cast<CameraItem>().Select(c => c.Name) : _settings.Cameras);
+                _cameraList.BeginUpdate();
+                _cameraList.Items.Clear();
+                foreach (var camera in _loadedCameras.OrderBy(c => c.Display).ThenBy(c => c.Depth))
+                    _cameraList.Items.Add(camera, keep.Contains(camera.Name));
+                _cameraList.EndUpdate();
+                _cameraListPid = _loadedPid;
+
+                // 방금 켠 앱에 이어서 녹화하도록 "이미 켜진 앱에 연결"로 전환
+                if (_loadedPid != 0 && _launchRadio.Checked)
+                {
+                    RefreshProcesses();
+                    var item = _processCombo.Items.Cast<ProcessItem>().FirstOrDefault(p => p.Pid == _loadedPid);
+                    if (item != null)
+                    {
+                        _processCombo.SelectedItem = item;
+                        _attachRadio.Checked = true;
+                    }
+                }
+                SetStatus(_loadedCameras.Count > 0
+                    ? $"카메라 {_loadedCameras.Count}대를 불러왔습니다. 찍을 카메라를 체크하세요."
+                    : "카메라를 찾지 못했습니다. 앱이 장면을 다 불러온 뒤 다시 시도해 보세요.", SystemColors.ControlText);
+            }
+            else if (code == 2)
+            {
+                SetStatus("이 앱은 카메라를 골라 찍을 수 없습니다 (IL2CPP 빌드 등). 화면 전체로 녹화됩니다.", Color.DarkOrange);
+            }
+            else
+            {
+                SetStatus("카메라 목록을 불러오지 못했습니다" + (_failure != null ? ": " + _failure : $" (종료 코드 {code})"), Color.Firebrick);
+            }
+            _failure = null;
+            UpdateCameraHint();
+            UpdateEnabledState();
+            if (_closeAfterExit) Close();
+        }
+
+        private void UpdateCameraHint()
+        {
+            int count = _cameraList.CheckedItems.Count;
+            string stem = "recording";
+            try { stem = Path.GetFileNameWithoutExtension(_outputBox.Text.Trim().Trim('"')); } catch { }
+            if (count == 0)
+                _cameraHint.Text = "체크하지 않으면 화면에 보이는 그대로 한 영상으로 찍습니다. 여러 대를 체크하면 카메라마다 영상을 따로 저장합니다.";
+            else if (count == 1)
+                _cameraHint.Text = "체크한 카메라 1대를 찍습니다. 화면에는 그리지 않고 카메라 출력만 저장합니다.";
+            else
+                _cameraHint.Text = $"체크한 카메라 {count}대를 각각 저장합니다. 예: {stem}_{_cameraList.CheckedItems.Cast<CameraItem>().First().Name}.mp4";
+        }
+
+        private static int ParseInt(string text) =>
+            int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out int value) ? value : 0;
 
         // ------------------------------------------------------------------ 캠코더 출력 처리
 
@@ -565,6 +762,7 @@ namespace UnityCamcorderGui
             if (saved.Success)
             {
                 _savedPath = saved.Groups[1].Value.Trim();
+                _savedPaths.Add(_savedPath);
                 return;
             }
             var fail = FailLine.Match(line);
@@ -582,7 +780,13 @@ namespace UnityCamcorderGui
             _clock.Stop();
             _progress.Style = ProgressBarStyle.Continuous;
 
-            if (code == 0 && _savedPath != null)
+            if (code == 0 && _savedPaths.Count > 1)
+            {
+                SetStatus($"저장 완료! (카메라 {_savedPaths.Count}대, 영상 {_savedPaths.Count}개)", Color.ForestGreen);
+                _progress.Value = _progress.Maximum;
+                _detailLabel.Text = string.Join("  ·  ", _savedPaths.Select(Path.GetFileName));
+            }
+            else if (code == 0 && _savedPath != null)
             {
                 if (_totalFrames > 0 && _capturedFrames < _totalFrames && !_stopSent)
                     SetStatus($"저장 완료 (목표보다 짧게 끝남: {_capturedFrames}/{_totalFrames} 프레임)", Color.DarkOrange);
@@ -645,6 +849,12 @@ namespace UnityCamcorderGui
             if (!IsRunning)
             {
                 SaveUiToSettings();
+                return;
+            }
+            if (_camcorder == null && _cameraLoader != null)
+            {
+                //카메라 목록만 불러오는 중이면 그냥 멈추고 닫음
+                KillTree(_cameraLoader);
                 return;
             }
             if (_closeAfterExit)

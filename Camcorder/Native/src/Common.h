@@ -17,6 +17,7 @@ namespace Camcorder
     extern CamcorderShared* g_shared;   //캠코더가 만든 제어용 공유 메모리
     extern HWND g_unityWindow;          //유니티 메인 창 (UnityWndClass)
     extern DWORD g_mainThreadId;        //유니티 메인 창을 가진 스레드 = 유니티 메인 스레드
+    extern volatile LONG g_cameraCaptureSession;  //카메라 촬영 중인 sessionId (-1이면 화면 캡처 또는 대기)
 
     void Log(const char* format, ...);
     void SetLastErrorText(const char* format, ...);
