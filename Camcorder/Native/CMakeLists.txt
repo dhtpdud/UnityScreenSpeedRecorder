@@ -10,6 +10,14 @@ if(MSVC)
     add_compile_options(/W3)
     # 소스와 문자열을 UTF-8로 (한국어 로그·오류 문구가 시스템 코드 페이지에 따라 깨지지 않도록)
     add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:/utf-8>)
+    # 최신 익스플로잇 완화 기법을 명시적으로 켠다: 제어 흐름 보호(CFG) + ASLR/DEP(+64비트 고엔트로피 ASLR).
+    # 이런 완화가 "빠진" 작고 서명 없는 실행 파일일수록 백신 휴리스틱/ML이 더 의심하므로,
+    # 정상 소프트웨어처럼 보이도록 강화한다. (탐지 회피가 아니라 실제 보안 강화)
+    add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:/guard:cf>)
+    add_link_options(/guard:cf /DYNAMICBASE /NXCOMPAT)
+    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+        add_link_options(/HIGHENTROPYVA)
+    endif()
 endif()
 
 # 버전 정보 리소스 (제조사·설명·버전). 백신의 일반(ML) 오탐을 줄이고 파일 속성에 정체를 밝힘
