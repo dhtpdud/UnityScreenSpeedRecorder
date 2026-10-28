@@ -11,7 +11,7 @@ namespace UnityCamcorder;
 public sealed class SharedControl : IDisposable
 {
     public const uint Magic = 0x524D4355u;   // 'UCMR'
-    public const int Version = 2;
+    public const int Version = 3;
     public const int MaxSlots = 64;
     public const int MaxCameras = 64;
     public const int MaxStreams = 16;
@@ -32,6 +32,7 @@ public sealed class SharedControl : IDisposable
         Capturing = 1 << 6,
         MainThread = 1 << 7,
         CameraCapture = 1 << 8,
+        Tick = 1 << 9,
     }
 
     // 카메라 목록 항목 플래그 (CamcorderCameraFlags)
@@ -75,6 +76,11 @@ public sealed class SharedControl : IDisposable
         _frameReady = new EventWaitHandle(false, EventResetMode.AutoReset, FrameReadyName(targetPid));
         _slotFree = new EventWaitHandle(false, EventResetMode.AutoReset, SlotFreeName(targetPid));
 
+        // 예전 버전 DLL이 이미 들어가 있는 앱인지 (DLL은 프로세스가 끝날 때까지 내려가지 않으므로 앱을 다시 켜야 함)
+        int oldPayload = _control.ReadInt32(60);
+        StaleDll = ((Status)_control.ReadInt32(56)).HasFlag(Status.Loaded) && oldPayload != 0 && oldPayload != Version;
+        StaleDllVersion = oldPayload;
+
         // 제어 블록 초기화
         _control.Write(0, Magic);
         _control.Write(4, Version);
@@ -96,6 +102,8 @@ public sealed class SharedControl : IDisposable
     public int RecordWidth { get => _control.ReadInt32(40); set => _control.Write(40, value); }
     public int RecordHeight { get => _control.ReadInt32(44); set => _control.Write(44, value); }
 
+    public bool StaleDll { get; }
+    public int StaleDllVersion { get; }
     public Status StatusFlags => (Status)_control.ReadInt32(56);
     public long PresentCount => _control.ReadInt64(64);
     public int BackbufferWidth => _control.ReadInt32(72);

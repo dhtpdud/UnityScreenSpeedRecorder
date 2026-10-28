@@ -43,12 +43,20 @@ public sealed class RecordingSession
         Log($"대상 프로세스: PID {target.Pid} ({(target.Is64Bit ? "64비트" : "32비트")})");
 
         var shared = new SharedControl(target.Pid, _settings.SlotCount);
+        if (shared.StaleDll)
+        {
+            Fail($"이 앱에는 이전 버전 캠코더 DLL(v{shared.StaleDllVersion})이 이미 들어가 있습니다. " +
+                 "DLL은 앱이 꺼질 때까지 바뀌지 않으니, 앱을 완전히 종료하고 다시 실행한 뒤 시도하세요.");
+            shared.Dispose();
+            return null;
+        }
         try
         {
             target.Inject(_toolDir);
             Log("DLL 주입 완료, 후킹 대기 중...");
+            // 앱이 막 켜진 경우 Mono(UnityEngine)가 올라올 때까지 DLL이 기다리므로 넉넉히
             if (!WaitFor(() => shared.StatusFlags.HasFlag(SharedControl.Status.Hooked) && shared.BackbufferWidth > 0,
-                         30000, () => target.HasExited || _stop.IsCancellationRequested))
+                         90000, () => target.HasExited || _stop.IsCancellationRequested))
             {
                 if (_stop.IsCancellationRequested)
                     Fail("후킹 전에 중지 요청을 받았습니다.");
@@ -66,17 +74,39 @@ public sealed class RecordingSession
             throw;
         }
         Log($"후킹 완료. 런타임: {shared.RuntimeInfo} / 그래픽스 API: {ApiName(shared.GraphicsApi)} / 해상도: {shared.BackbufferWidth}x{shared.BackbufferHeight}");
+        if (!shared.StatusFlags.HasFlag(SharedControl.Status.Tick))
+            Log($"경고: {DescribeMainThread(shared)} 배속·카메라 촬영 없이 화면을 실시간으로 캡처합니다.");
         return (target, shared);
+    }
+
+    // 메인 스레드 틱(배속·카메라 촬영에 필요)이 왜 안 되는지 사람이 읽을 문장으로
+    private static string DescribeMainThread(SharedControl shared)
+    {
+        var flags = shared.StatusFlags;
+        if (flags.HasFlag(SharedControl.Status.RuntimeIl2cpp))
+            return "IL2CPP로 빌드된 앱이라 유니티 메인 스레드에 들어갈 수 없습니다.";
+        if (!flags.HasFlag(SharedControl.Status.Tick))
+            return string.IsNullOrWhiteSpace(shared.LastError)
+                ? "유니티 메인 스레드 콜백을 등록하지 못했습니다."
+                : $"유니티 메인 스레드 콜백을 등록하지 못했습니다: {shared.LastError}";
+        if (!flags.HasFlag(SharedControl.Status.MainThread))
+            return "콜백은 등록했지만 앱이 아직 한 프레임도 부르지 않았습니다. (앱이 멈춰 있거나, 창이 최소화됐거나, 로딩 중)";
+        return string.IsNullOrWhiteSpace(shared.LastError) ? "" : shared.LastError;
     }
 
     // 앱 안의 카메라 목록을 받아 옴. 카메라 촬영을 쓸 수 없는 앱이면 null
     private List<SharedControl.CameraInfo>? RequestCameraList(SharedControl shared, TargetProcess target)
     {
+        if (!shared.StatusFlags.HasFlag(SharedControl.Status.Tick))
+        {
+            Log($"카메라 목록을 받을 수 없습니다. {DescribeMainThread(shared)} 화면 전체 촬영만 가능합니다.");
+            return null;
+        }
         int request = shared.CameraListRequest + 1;
         shared.CameraListRequest = request;
-        if (!WaitFor(() => shared.CameraListDone == request, 30000, () => target.HasExited || _stop.IsCancellationRequested))
+        if (!WaitFor(() => shared.CameraListDone == request, 20000, () => target.HasExited || _stop.IsCancellationRequested))
         {
-            Log("카메라 목록을 받지 못했습니다. (앱이 아직 로딩 중이거나 Mono 런타임이 아님)");
+            Log($"카메라 목록을 받지 못했습니다. {DescribeMainThread(shared)}");
             return null;
         }
         int count = shared.CameraCount;
@@ -163,7 +193,7 @@ public sealed class RecordingSession
         using var _ = shared;
 
         if (shared.StatusFlags.HasFlag(SharedControl.Status.TimeFailed))
-            Log("경고: 배속(captureDeltaTime) 제어를 쓸 수 없습니다. 실시간 속도로 캡처합니다.");
+            Log("경고: 배속(captureFramerate) 제어를 쓸 수 없습니다. 실시간 속도로 캡처합니다.");
 
         // 촬영 카메라
         var cameras = new List<SharedControl.CameraInfo>();
@@ -219,7 +249,8 @@ public sealed class RecordingSession
         int result;
         if (!WaitFor(() => shared.AppliedSessionId == session, 15000, () => target.HasExited || _stop.IsCancellationRequested))
         {
-            result = Fail(target.HasExited ? "촬영 준비 중에 대상이 종료되었습니다." : "앱이 촬영 준비에 응답하지 않습니다.");
+            result = Fail(target.HasExited ? "촬영 준비 중에 대상이 종료되었습니다."
+                                           : $"앱이 촬영 준비에 응답하지 않습니다. {DescribeMainThread(shared)}".TrimEnd());
         }
         else if (cameras.Count > 0 && !shared.StatusFlags.HasFlag(SharedControl.Status.CameraCapture))
         {
@@ -231,6 +262,9 @@ public sealed class RecordingSession
             Log(cameraMode
                 ? $"촬영 방식: 카메라 RenderTexture (화면에 그리지 않고 카메라 출력을 GPU에서 바로 읽음), 영상 {streams.Count}개"
                 : "촬영 방식: 화면(백버퍼) 캡처");
+            Log(shared.StatusFlags.HasFlag(SharedControl.Status.TimeControl)
+                ? $"배속 촬영: 켜짐 (게임 시간은 프레임당 1/{_settings.Fps}초, 프레임은 하드웨어가 허락하는 최대 속도)"
+                : $"배속 촬영: 꺼짐 (실시간 캡처). {DescribeMainThread(shared)}".TrimEnd());
             foreach (var s in streams)
                 Log($"  - {s.Label} → {Path.GetFullPath(s.OutputPath)}");
             Log($"촬영 시작 (session {session}, fps {_settings.Fps})");

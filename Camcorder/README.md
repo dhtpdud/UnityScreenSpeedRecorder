@@ -8,10 +8,11 @@
 
 ## 핵심 아이디어
 
-- **카메라 촬영 (Mono 앱, 기본)**: 원본 프로젝트와 같은 방식입니다. 카메라의 `targetTexture`를 캠코더가 만든 `RenderTexture`로 바꿔 **화면 대신** 그곳에 그리게 하고, 매 프레임 `AsyncGPUReadback`으로 GPU에서 비동기로 읽어 옵니다. 화면(백버퍼)을 다시 읽지 않으므로 GPU가 같은 장면을 두 번 다루지 않고, GPU 동기 대기도 없습니다. 녹화 중에는 앱 화면이 멈춘 것처럼 보이는 것이 정상이며, 녹화가 끝나면 카메라는 원래대로 돌아옵니다.
+- **카메라 촬영 (Mono 앱, 기본)**: 원본 프로젝트와 같은 방식입니다. 카메라의 `targetTexture`를 캠코더가 만든 `RenderTexture`로 바꿔 **화면 대신** 그곳에 그리게 하고, 매 프레임 `AsyncGPUReadback`으로 GPU에서 비동기로 읽어 옵니다(쓸 수 없는 환경에서는 `Texture2D.ReadPixels`로 동기 읽기). 화면(백버퍼)을 다시 읽지 않으므로 GPU가 같은 장면을 두 번 다루지 않습니다. 녹화 중에는 앱 화면이 멈춘 것처럼 보이는 것이 정상이며, 녹화가 끝나면 카메라는 원래대로 돌아옵니다.
 - **촬영 카메라 선택**: 앱 안의 카메라 목록을 불러와 여러 대를 고를 수 있고, 카메라마다 영상 파일을 따로 저장합니다. 고르지 않으면 화면에 그리던 카메라 전부를 하나의 RenderTexture로 모아 한 영상으로 찍습니다. 평소 꺼져 있는 카메라는 촬영 동안만 켜고, 이미 자기 RenderTexture로 그리던 카메라는 그 텍스처를 그대로 읽습니다.
 - **화면 캡처 (IL2CPP 등 대체 경로)**: 카메라를 다룰 수 없는 앱은 DirectX `IDXGISwapChain::Present`를 후킹해 화면에 나가는 백버퍼를 읽습니다. (OBS의 "게임 캡처"와 같은 방식, D3D11·D3D12)
-- **배속 촬영**: 대상의 Mono 런타임을 통해 `UnityEngine.Time.captureDeltaTime = 1/fps` 로 설정합니다(2019.1 이하는 `captureFramerate`). 동시에 vSync와 프레임 제한을 풀고, 다른 창을 눌러도 멈추지 않게 `runInBackground`를 켭니다(녹화가 끝나면 원래 값으로 복원). 그러면 게임 시간이 실제 경과 시간과 무관하게 프레임당 정확히 `1/fps`씩 흐르므로, 하드웨어가 허락하는 한 최대 속도로 프레임이 쏟아집니다. 결과 영상을 `fps`로 재생하면 **정상 속도**로 보입니다.
+- **배속 촬영**: 대상의 Mono 런타임을 통해 `UnityEngine.Time.captureDeltaTime = 1/fps` 로 설정합니다(2019.1 이하는 `captureFramerate`, 예: 2018.1). 동시에 vSync와 프레임 제한을 풀고, 다른 창을 눌러도 멈추지 않게 `runInBackground`를 켭니다(녹화가 끝나면 원래 값으로 복원). 그러면 게임 시간이 실제 경과 시간과 무관하게 프레임당 정확히 `1/fps`씩 흐르므로, 하드웨어가 허락하는 한 최대 속도로 프레임이 쏟아집니다. 결과 영상을 `fps`로 재생하면 **정상 속도**로 보입니다.
+- **메인 스레드 진입**: 유니티 API는 메인 스레드에서만 부를 수 있으므로, DLL이 `Application.onBeforeRender`(와 `Canvas.willRenderCanvases`) 이벤트에 콜백을 등록해 매 프레임 메인 스레드에서 배속·카메라 작업을 합니다. 등록에 실패하면 화면을 실시간으로 캡처합니다.
 - **인코딩**: 읽어 온 원본 프레임을 `ffmpeg` 표준 입력으로 바로 흘려보내 실시간 인코딩합니다. 가능하면 GPU 하드웨어 인코더(NVENC → QSV → AMF → libx264)를 자동 선택합니다.
 - **공유 메모리 링 버퍼**로 DLL(생산자)과 캠코더(소비자)를 연결합니다. 배속 촬영 중 캠코더가 인코딩을 못 따라오면 게임이 잠깐 기다리게 해서 **프레임을 버리지 않습니다**(게임 시간이 1/fps씩만 흐르므로 영상이 끊기지 않음). 배속을 쓸 수 없는 실시간 캡처에서만 프레임을 버립니다.
 
@@ -149,6 +150,12 @@ UnityCamcorder.exe --pid 12345 --cameras "Main Camera,MinimapCamera" --out "C:\r
 1. **Microsoft Defender**: [Microsoft 오탐 신고](https://www.microsoft.com/en-us/wdsi/filesubmission)에 파일을 "Incorrectly detected"로 제출하면 보통 며칠 안에 정의가 고쳐집니다. 다른 백신도 각자 오탐 신고 페이지가 있습니다.
 2. **내 PC에서 바로 쓰기**: Windows 보안 → 바이러스 및 위협 방지 → 설정 관리 → 제외에 캠코더 폴더를 추가합니다. (직접 빌드했거나 이 저장소의 Actions에서 받은 파일에만 하세요.)
 3. **완전한 해결**: 코드 서명 인증서(OV/EV)로 `Inject.exe`, `UnityCamcorderHook.dll`, `UnityCamcorder.exe`, `UnityCamcorderGui.exe`에 서명하면 대부분의 ML 탐지와 SmartScreen 경고가 사라집니다. 인증서는 유료이며, 있으면 `signtool sign /fd sha256 /tr http://timestamp.digicert.com /td sha256 /a <파일>` 로 서명합니다.
+
+## 문제 해결
+
+- **"이전 버전 캠코더 DLL이 이미 들어가 있습니다"**: 주입된 DLL은 앱이 꺼질 때까지 내려가지 않습니다. 캠코더를 새 버전으로 바꿨다면 대상 앱을 완전히 종료하고 다시 실행한 뒤 녹화하세요.
+- **"앱이 촬영 준비에 응답하지 않습니다"**: 뒤에 붙는 이유를 확인하세요. "아직 한 프레임도 부르지 않았습니다"면 앱이 멈춰 있거나 최소화됐거나 로딩 중입니다. 앱 창을 띄워 둔 채 다시 시도하세요.
+- 자세한 기록은 `%LOCALAPPDATA%\UnityCamcorder\Logs\hook_<PID>.log`에 있습니다. "메인 스레드 틱 시작" 줄이 있으면 배속·카메라 촬영이 동작하는 상태입니다.
 
 ## 알려진 한계
 

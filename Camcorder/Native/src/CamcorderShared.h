@@ -6,7 +6,7 @@
 //C# 쪽(Controller/SharedMemory.cs)의 오프셋과 반드시 같아야 합니다.
 
 #define CAMCORDER_MAGIC 0x524D4355u   // 'UCMR'
-#define CAMCORDER_VERSION 2
+#define CAMCORDER_VERSION 3   // 3: 메인 스레드 틱을 유니티 이벤트로 (ST_TICK)
 #define CAMCORDER_MAX_SLOTS 64
 #define CAMCORDER_MAX_CAMERAS 64
 #define CAMCORDER_MAX_STREAMS 16
@@ -32,8 +32,9 @@ enum CamcorderStatus : int32_t
     ST_TIME_CONTROL = 1 << 4,       //captureFramerate(captureDeltaTime) 적용 성공
     ST_TIME_FAILED = 1 << 5,        //시간 제어 실패 (실시간 캡처로 진행)
     ST_CAPTURING = 1 << 6,          //프레임 캡처 중
-    ST_MAIN_THREAD = 1 << 7,        //메인 스레드 훅이 한 번 이상 실행됨
-    ST_CAMERA_CAPTURE = 1 << 8,     //카메라 RenderTexture + AsyncGPUReadback 으로 캡처 중 (화면 백버퍼를 읽지 않음)
+    ST_MAIN_THREAD = 1 << 7,        //메인 스레드 틱이 한 번 이상 실행됨
+    ST_CAMERA_CAPTURE = 1 << 8,     //카메라 RenderTexture 로 캡처 중 (화면 백버퍼를 읽지 않음)
+    ST_TICK = 1 << 9,               //메인 스레드 틱(Application.onBeforeRender 등)을 등록함
 };
 
 //카메라 목록 항목 플래그

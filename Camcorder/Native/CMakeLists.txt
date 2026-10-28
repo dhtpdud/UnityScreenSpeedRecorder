@@ -8,10 +8,12 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 if(MSVC)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
     add_compile_options(/W3)
+    # 소스와 문자열을 UTF-8로 (한국어 로그·오류 문구가 시스템 코드 페이지에 따라 깨지지 않도록)
+    add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:/utf-8>)
 endif()
 
 # 버전 정보 리소스 (제조사·설명·버전). 백신의 일반(ML) 오탐을 줄이고 파일 속성에 정체를 밝힘
-set(CAMCORDER_VERSION "1.1.0.0")
+set(CAMCORDER_VERSION "1.2.0.0")
 string(REPLACE "." "," CAMCORDER_VERSION_COMMA "${CAMCORDER_VERSION}")
 function(camcorder_version_resource target description original type manifest)
     set(CAMCORDER_FILE_DESCRIPTION "${description}")

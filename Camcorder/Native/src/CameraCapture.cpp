@@ -8,6 +8,7 @@
 //카메라의 targetTexture를 캠코더용 RenderTexture로 돌려 화면 대신 그곳에 그리게 하고,
 //매 프레임 AsyncGPUReadback으로 GPU에서 비동기로 읽어 와 공유 메모리 링 버퍼로 캠코더에 넘깁니다.
 //화면(백버퍼)을 다시 읽지 않으므로 GPU가 같은 장면을 두 번 다루지 않고, GPU 동기 대기도 없습니다.
+//AsyncGPUReadback을 쓸 수 없는 환경(구버전, 미지원 그래픽 API)에서는 Texture2D.ReadPixels로 동기 읽기를 합니다.
 //
 //촬영 카메라를 고르지 않으면, 화면에 그리던 카메라를 모두 하나의 RenderTexture로 모아 한 영상으로 찍습니다.
 //고르면 카메라마다 스트림 하나(= 영상 하나)가 됩니다. 앱이 이미 자기 RenderTexture로 그리던 카메라는
@@ -23,13 +24,17 @@ namespace Camcorder
     static bool s_apiResolved = false;
     static bool s_apiOk = false;
 
-    static Mono::Class c_camera, c_renderTexture, c_object, c_request;
+    static Mono::Class c_camera, c_renderTexture, c_object, c_request, c_texture2D;
     static Mono::Method m_allCameras, m_allCamerasCount, m_mainCamera, m_findObjectsOfType;
     static Mono::Method m_getTargetTexture, m_setTargetTexture, m_getTargetDisplay, m_getDepth;
     static Mono::Method m_getEnabled, m_setEnabled, m_getName, m_getInstanceId, m_destroy;
     static Mono::Method m_rtCtor, m_rtCreate, m_rtRelease, m_rtWidth, m_rtHeight;
     static Mono::Method m_screenWidth, m_screenHeight, m_supportsReadback;
     static Mono::Method m_request, m_reqUpdate, m_reqDone, m_reqError, m_reqData, m_reqDataSize, m_reqWait;
+    static Mono::Method m_tex2dCtor, m_readPixels, m_getPixels32, m_rtGetActive, m_rtSetActive;
+    static bool s_asyncOk = false;   // AsyncGPUReadback 사용 가능
+    static bool s_syncOk = false;    // ReadPixels 사용 가능
+    static bool s_useAsync = true;   // 이번 촬영의 읽기 방식
     static bool s_requestHasFormat = false;
     static int s_requestArgs = 0;
     static int s_requestSize = 0;
@@ -106,14 +111,24 @@ namespace Camcorder
         if (!m_reqDataSize) m_reqDataSize = Mono::FindMethod(c_request, "get_layerDataSize", 0);
         s_requestSize = Mono::ValueSize(c_request);
 
+        //동기 읽기용: RenderTexture.active → Texture2D.ReadPixels → GetPixels32
+        c_texture2D = Mono::FindClass("UnityEngine", "Texture2D");
+        m_tex2dCtor = Mono::FindMethodSig(c_texture2D, ".ctor", { "System.Int32", "System.Int32", "UnityEngine.TextureFormat", "System.Boolean" });
+        m_readPixels = Mono::FindMethodSig(c_texture2D, "ReadPixels", { "UnityEngine.Rect", "System.Int32", "System.Int32" });
+        m_getPixels32 = Mono::FindMethod(c_texture2D, "GetPixels32", 0);
+        m_rtGetActive = Mono::FindMethod(c_renderTexture, "get_active", 0);
+        m_rtSetActive = Mono::FindMethod(c_renderTexture, "set_active", 1);
+
+        s_asyncOk = m_request && m_reqUpdate && m_reqDone && m_reqError && m_reqData && s_requestSize > 0 && s_requestSize <= 32;
+        s_syncOk = m_tex2dCtor && m_readPixels && m_getPixels32 && m_rtGetActive && m_rtSetActive;
         s_apiOk = c_camera && m_getTargetTexture && m_setTargetTexture && m_getInstanceId && m_getName &&
-                  (m_findObjectsOfType || m_allCameras) && m_rtCtor && m_rtCreate &&
-                  m_request && m_reqUpdate && m_reqDone && m_reqError && m_reqData &&
-                  s_requestSize > 0 && s_requestSize <= 32;
+                  (m_findObjectsOfType || m_allCameras) && m_rtCtor && m_rtCreate && (s_asyncOk || s_syncOk);
         if (!s_apiOk)
-            Log("카메라 촬영에 필요한 유니티 API를 찾지 못함 (Request=%p, GetDataRaw=%p, ctor=%p) — 화면 캡처로 진행", m_request, m_reqData, m_rtCtor);
+            Log("카메라 촬영에 필요한 유니티 API를 찾지 못함 (Request=%p, GetDataRaw=%p, ReadPixels=%p, ctor=%p) — 화면 캡처로 진행",
+                m_request, m_reqData, m_readPixels, m_rtCtor);
         else
-            Log("카메라 촬영 API 준비 완료 (Request 인자 %d개, 형식 지정 %s)", s_requestArgs, s_requestHasFormat ? "예" : "아니오");
+            Log("카메라 촬영 API 준비 완료 (비동기 읽기 %s, Request 인자 %d개, 형식 지정 %s / 동기 읽기 %s)",
+                s_asyncOk ? "가능" : "불가", s_requestArgs, s_requestHasFormat ? "예" : "아니오", s_syncOk ? "가능" : "불가");
         return s_apiOk;
     }
 
@@ -188,6 +203,17 @@ namespace Camcorder
         bool created = false;
         Mono::GetBool(m_rtCreate, rt, created);
         return rt;
+    }
+
+    static Mono::Object CreateReadTexture(int width, int height)
+    {
+        Mono::Object tex = Mono::New(c_texture2D);
+        if (!tex)
+            return nullptr;
+        int format = kTextureFormatRGBA32;
+        bool mipChain = false;
+        void* args[4] = { &width, &height, &format, &mipChain };
+        return Mono::Invoke(m_tex2dCtor, tex, args) ? tex : nullptr;
     }
 
     static void DestroyRenderTexture(Mono::Object rt)
@@ -303,6 +329,7 @@ namespace Camcorder
         std::vector<uint32_t> enabledByUs;   // 꺼져 있어서 촬영 동안 켠 카메라
         uint32_t ownRt = 0;                  // 캠코더가 만든 RenderTexture (없으면 0)
         uint32_t source = 0;                 // 읽어 올 텍스처 (ownRt 또는 카메라가 원래 쓰던 RT)
+        uint32_t readTex = 0;                // 동기 읽기용 Texture2D
         int width = 0, height = 0;
         std::deque<PendingRead> pending;
         bool errorLogged = false;
@@ -394,7 +421,9 @@ namespace Camcorder
             Sleep(1);
     }
 
-    //읽기가 끝난 프레임을 링 버퍼로 넘김. 유니티 텍스처는 아래쪽 줄부터 담겨 있으므로 위아래를 뒤집어 복사
+    static void CopyToRing(Stream& stream, const uint8_t* data);
+
+    //비동기 읽기가 끝난 프레임을 링 버퍼로 넘김
     static void Deliver(Stream& stream, PendingRead& read)
     {
         bool error = true;
@@ -414,11 +443,45 @@ namespace Camcorder
         const uint8_t* data = *(const uint8_t**)Mono::Unbox(boxedPtr);
         int dataSize = 0;
         Mono::GetInt(m_reqDataSize, read.request, dataSize);
+        if (!data || (m_reqDataSize && dataSize < (int64_t)stream.width * 4 * stream.height))
+            return;
+        CopyToRing(stream, data);
+    }
+
+    //동기 읽기: 카메라가 지난 프레임에 그린 RenderTexture를 Texture2D로 읽어 바로 넘김
+    static void ReadNow(Stream& stream)
+    {
+        Mono::Object source = Mono::Held(stream.source);
+        Mono::Object tex = Mono::Held(stream.readTex);
+        if (!source || !tex)
+            return;
+        Mono::Object previous = nullptr;
+        Mono::GetObject(m_rtGetActive, nullptr, previous);
+        Mono::SetObject(m_rtSetActive, nullptr, source);
+        float rect[4] = { 0.0f, 0.0f, (float)stream.width, (float)stream.height };   // UnityEngine.Rect(x, y, w, h)
+        int zero = 0;
+        void* args[3] = { rect, &zero, &zero };
+        bool ok = Mono::Invoke(m_readPixels, tex, args);
+        Mono::SetObject(m_rtSetActive, nullptr, previous);
+        Mono::Object pixels = nullptr;
+        if (!ok || !Mono::GetObject(m_getPixels32, tex, pixels) || !pixels ||
+            (int64_t)Mono::ArrayLength(pixels) < (int64_t)stream.width * stream.height)
+        {
+            if (!stream.errorLogged)
+                Log("스트림 %d: ReadPixels 실패 (이 프레임은 건너뜀)", stream.index);
+            stream.errorLogged = true;
+            return;
+        }
+        CopyToRing(stream, (const uint8_t*)Mono::ArrayData(pixels, 4));   // Color32 = RGBA 4바이트
+    }
+
+    //유니티 텍스처는 아래쪽 줄부터 담겨 있으므로 위아래를 뒤집어 링 버퍼에 복사
+    static void CopyToRing(Stream& stream, const uint8_t* data)
+    {
+        if (!data)
+            return;
         int64_t rowBytes = (int64_t)stream.width * 4;
         int64_t frameBytes = rowBytes * stream.height;
-        if (!data || (m_reqDataSize && dataSize < frameBytes))
-            return;
-
         int slot; uint8_t* dest; int64_t capacity;
         //캠코더가 인코딩을 못 따라오면 여기서 기다림 → 게임도 기다리므로 프레임을 버리지 않음
         if (!s_ring.BeginWrite(slot, dest, capacity, true) || frameBytes > capacity)
@@ -471,12 +534,15 @@ namespace Camcorder
         }
         if (ownRt)
             DestroyRenderTexture(ownRt);
+        if (Mono::Object tex = Mono::Held(stream.readTex))
+            Mono::SetObject(m_destroy, nullptr, tex);
+        Mono::Release(stream.readTex);
         if (stream.source && stream.source != stream.ownRt)
             Mono::Release(stream.source);
         Mono::Release(stream.ownRt);
         stream.cameras.clear();
         stream.enabledByUs.clear();
-        stream.ownRt = stream.source = 0;
+        stream.ownRt = stream.source = stream.readTex = 0;
     }
 
     void StopCameraCapture()
@@ -511,10 +577,13 @@ namespace Camcorder
         StopCameraCapture();
         if (!g_shared || !IsMonoReady() || !ResolveApi())
             return false;
-        bool supported = true;
-        if (m_supportsReadback && Mono::GetBool(m_supportsReadback, nullptr, supported) && !supported)
+        bool supported = s_asyncOk;
+        if (supported && m_supportsReadback)
+            Mono::GetBool(m_supportsReadback, nullptr, supported);
+        s_useAsync = supported;
+        if (!s_useAsync && !s_syncOk)
         {
-            Log("이 그래픽 환경은 AsyncGPUReadback을 지원하지 않아 화면 캡처로 진행");
+            Log("이 환경은 AsyncGPUReadback을 지원하지 않고 ReadPixels도 찾지 못해 화면 캡처로 진행");
             return false;
         }
 
@@ -583,6 +652,11 @@ namespace Camcorder
         for (Stream& stream : s_streams)
         {
             if (stream.width * stream.height > maxW * maxH) { maxW = stream.width; maxH = stream.height; }
+            if (ok && !s_useAsync)
+            {
+                stream.readTex = Mono::Hold(CreateReadTexture(stream.width, stream.height));
+                ok = stream.readTex != 0;
+            }
         }
         if (ok)
             ok = s_ring.Open(session, maxW, maxH, 4);
@@ -598,10 +672,11 @@ namespace Camcorder
         s_session = session;
         InterlockedExchange(&g_cameraCaptureSession, session);
         AddStatus(ST_CAMERA_CAPTURE);
+        const char* mode = s_useAsync ? "AsyncGPUReadback" : "ReadPixels";
         if (s_composite)
-            Log("카메라 촬영 시작: 화면 전체 (카메라 %d대 → %dx%d RenderTexture)", (int)s_streams[0].cameras.size(), maxW, maxH);
+            Log("카메라 촬영 시작: 화면 전체 (카메라 %d대 → %dx%d RenderTexture, %s)", (int)s_streams[0].cameras.size(), maxW, maxH, mode);
         else
-            Log("카메라 촬영 시작: 카메라 %d대 (각각 영상 하나)", (int)s_streams.size());
+            Log("카메라 촬영 시작: 카메라 %d대 (각각 영상 하나, %s)", (int)s_streams.size(), mode);
         return true;
     }
 
@@ -626,6 +701,13 @@ namespace Camcorder
 
         for (Stream& stream : s_streams)
         {
+            if (!s_useAsync)
+            {
+                if (!IsRecordRequested())
+                    return;
+                ReadNow(stream);
+                continue;
+            }
             while (!stream.pending.empty() && IsDone(stream.pending.front()))
             {
                 Deliver(stream, stream.pending.front());

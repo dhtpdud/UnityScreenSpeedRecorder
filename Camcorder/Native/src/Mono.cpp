@@ -13,6 +13,11 @@ namespace Camcorder
         typedef MonoDomain (*get_root_domain_t)();
         typedef MonoDomain (*domain_get_t)();
         typedef void* (*thread_attach_t)(MonoDomain);
+        typedef void (*thread_detach_t)(void*);
+        typedef void (*domain_foreach_t)(void (*)(MonoDomain, void*), void*);
+        typedef MonoImage (*get_corlib_t)();
+        typedef Class (*class_get_nested_types_t)(Class, void**);
+        typedef const char* (*class_get_name_t)(Class);
         typedef MonoImage (*image_loaded_t)(const char*);
         typedef MonoAssembly (*domain_assembly_open_t)(MonoDomain, const char*);
         typedef MonoImage (*assembly_get_image_t)(MonoAssembly);
@@ -42,6 +47,11 @@ namespace Camcorder
         static get_root_domain_t p_get_root_domain;
         static domain_get_t p_domain_get;
         static thread_attach_t p_thread_attach;
+        static thread_detach_t p_thread_detach;
+        static domain_foreach_t p_domain_foreach;
+        static get_corlib_t p_get_corlib;
+        static class_get_nested_types_t p_class_get_nested_types;
+        static class_get_name_t p_class_get_name;
         static image_loaded_t p_image_loaded;
         static domain_assembly_open_t p_domain_assembly_open;
         static assembly_get_image_t p_assembly_get_image;
@@ -68,7 +78,6 @@ namespace Camcorder
         static free_t p_free;
 
         static MonoImage s_coreImage = nullptr;
-        static bool s_attached = false;
 
         template <typename T>
         static void Bind(T& fn, const char* name)
@@ -92,6 +101,11 @@ namespace Camcorder
             Bind(p_get_root_domain, "mono_get_root_domain");
             Bind(p_domain_get, "mono_domain_get");
             Bind(p_thread_attach, "mono_thread_attach");
+            Bind(p_thread_detach, "mono_thread_detach");
+            Bind(p_domain_foreach, "mono_domain_foreach");
+            Bind(p_get_corlib, "mono_get_corlib");
+            Bind(p_class_get_nested_types, "mono_class_get_nested_types");
+            Bind(p_class_get_name, "mono_class_get_name");
             Bind(p_image_loaded, "mono_image_loaded");
             Bind(p_domain_assembly_open, "mono_domain_assembly_open");
             Bind(p_assembly_get_image, "mono_assembly_get_image");
@@ -129,26 +143,55 @@ namespace Camcorder
             return domain ? domain : p_get_root_domain();
         }
 
+        static MonoImage LoadedCoreImage()
+        {
+            if (!p_image_loaded)
+                return nullptr;
+            MonoImage image = p_image_loaded("UnityEngine.CoreModule");   // Unity 2017.2+
+            return image ? image : p_image_loaded("UnityEngine");         // 구버전
+        }
+
+        bool IsCoreLoaded()
+        {
+            return Load() && p_get_root_domain() != nullptr && LoadedCoreImage() != nullptr;
+        }
+
+        //유니티 스크립트가 도는 도메인: 플레이어는 루트 도메인, 에디터처럼 자식 도메인이 있으면 그쪽
+        static void PickDomain(MonoDomain domain, void* user)
+        {
+            if (domain != p_get_root_domain())
+                *(MonoDomain*)user = domain;
+        }
+
+        static MonoDomain ScriptDomain()
+        {
+            MonoDomain domain = p_get_root_domain();
+            if (p_domain_foreach)
+                p_domain_foreach(PickDomain, &domain);
+            return domain;
+        }
+
+        void* AttachThread()
+        {
+            if (!Load() || !p_thread_attach || p_get_root_domain() == nullptr)
+                return nullptr;
+            return p_thread_attach(ScriptDomain());
+        }
+
+        void DetachThread(void* thread)
+        {
+            if (thread && p_thread_detach)
+                p_thread_detach(thread);
+        }
+
         bool Init()
         {
             if (s_coreImage)
                 return true;
             if (!Load() || p_get_root_domain() == nullptr)
                 return false;
-            if (!s_attached)
-            {
-                if (p_thread_attach)
-                    p_thread_attach(p_get_root_domain());
-                s_attached = true;
-            }
             //이미 로드된 어셈블리를 이름으로 찾음 (mono_domain_assembly_open은 파일 경로를 받으므로 이름만으로는 실패할 수 있음)
-            MonoImage image = nullptr;
-            if (p_image_loaded)
-            {
-                image = p_image_loaded("UnityEngine.CoreModule");   // Unity 2017.2+
-                if (!image)
-                    image = p_image_loaded("UnityEngine");          // 구버전
-            }
+            MonoImage image = LoadedCoreImage();
             if (!image && p_domain_assembly_open && p_assembly_get_image)
             {
                 MonoAssembly assembly = p_domain_assembly_open(p_get_root_domain(), "UnityEngine.CoreModule");
@@ -172,6 +215,32 @@ namespace Camcorder
                     klass = p_class_from_name(legacy, nameSpace, name);
             }
             return klass;
+        }
+
+        Class FindClassIn(const char* imageName, const char* nameSpace, const char* name)
+        {
+            MonoImage image = p_image_loaded ? p_image_loaded(imageName) : nullptr;
+            return image ? p_class_from_name(image, nameSpace, name) : nullptr;
+        }
+
+        Class FindCorlibClass(const char* nameSpace, const char* name)
+        {
+            MonoImage corlib = p_get_corlib ? p_get_corlib() : nullptr;
+            return corlib ? p_class_from_name(corlib, nameSpace, name) : nullptr;
+        }
+
+        Class FindNestedClass(Class outer, const char* name)
+        {
+            if (!outer || !p_class_get_nested_types || !p_class_get_name)
+                return nullptr;
+            void* iter = nullptr;
+            while (Class nested = p_class_get_nested_types(outer, &iter))
+            {
+                const char* nestedName = p_class_get_name(nested);
+                if (nestedName && strcmp(nestedName, name) == 0)
+                    return nested;
+            }
+            return nullptr;
         }
 
         Method FindMethod(Class klass, const char* name, int paramCount)
@@ -331,6 +400,13 @@ namespace Camcorder
             if (!array || !p_array_addr_with_size)
                 return nullptr;
             return *(Object*)p_array_addr_with_size(array, (int)sizeof(void*), index);
+        }
+
+        void* ArrayData(Object array, int elementSize)
+        {
+            if (!array || !p_array_addr_with_size)
+                return nullptr;
+            return p_array_addr_with_size(array, elementSize, 0);
         }
 
         uint32_t Hold(Object obj)

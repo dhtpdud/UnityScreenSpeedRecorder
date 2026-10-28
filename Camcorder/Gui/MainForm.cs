@@ -21,6 +21,7 @@ namespace UnityCamcorderGui
         private static readonly Regex ProgressLine = new Regex(@"진행: (\d+)(?:/(\d+))? 프레임");
         private static readonly Regex SavedLine = new Regex(@"영상 저장 완료: (.+?) \(");
         private static readonly Regex FailLine = new Regex(@"(?:실패|오류): (.*)");
+        private static readonly Regex CameraListLine = new Regex(@"카메라 목록을 받(?:을 수 없|지 못했)습니다\. ?(.*)");
 
         private readonly GuiSettings _settings = GuiSettings.Load();
 
@@ -73,6 +74,12 @@ namespace UnityCamcorderGui
             Font = new Font("Consolas", 9f), BackColor = SystemColors.Window, WordWrap = false,
         };
         private readonly Timer _clock = new Timer { Interval = 500 };
+        // 위: 설정(넘치면 스크롤), 아래: 기록. 기록 칸이 항상 몇 줄은 보이도록 나눔
+        private readonly SplitContainer _split = new SplitContainer
+        {
+            Dock = DockStyle.Fill, Orientation = Orientation.Horizontal, FixedPanel = FixedPanel.Panel1, SplitterWidth = 6,
+        };
+        private TableLayoutPanel? _settingsPanel;
 
         // --- 녹화 상태 ---
         private Process? _camcorder;
@@ -84,6 +91,7 @@ namespace UnityCamcorderGui
         private string? _savedPath;
         private readonly System.Collections.Generic.List<string> _savedPaths = new System.Collections.Generic.List<string>();
         private string? _failure;
+        private string? _cameraListReason;
         private DateTime _startedAt;
         private DateTime? _encodingStartedAt;
 
@@ -93,7 +101,7 @@ namespace UnityCamcorderGui
             Font = new Font("Malgun Gothic", 9f);
             AutoScaleMode = AutoScaleMode.Font;
             StartPosition = FormStartPosition.CenterScreen;
-            MinimumSize = new Size(760, 780);
+            MinimumSize = new Size(720, 520);
             Size = new Size(860, 900);
             try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
 
@@ -108,12 +116,15 @@ namespace UnityCamcorderGui
 
         private void BuildLayout()
         {
-            var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, Padding = new Padding(10) };
+            var root = new TableLayoutPanel
+            {
+                Dock = DockStyle.Top, ColumnCount = 1, Padding = new Padding(10, 10, 10, 4),
+                AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            };
             root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
             // 1. 녹화할 앱
             var target = NewGrid();
@@ -150,10 +161,44 @@ namespace UnityCamcorderGui
             run.Controls.Add(_detailLabel);
             root.Controls.Add(run);
 
-            // 로그
-            root.Controls.Add(Group("기록", _logBox, fill: true));
+            _settingsPanel = root;
+            _split.Panel1.AutoScroll = true;
+            _split.Panel1.Controls.Add(root);
 
-            Controls.Add(root);
+            // 로그
+            _split.Panel2.Padding = new Padding(10, 0, 10, 10);
+            _split.Panel2.Controls.Add(Group("기록", _logBox, fill: true));
+
+            Controls.Add(_split);
+            Shown += (s, e) => FitToScreen();
+            _split.Panel1.Resize += (s, e) => WrapLabels();
+        }
+
+        // 창을 화면 작업 영역 안에 맞추고, 설정은 필요한 만큼만, 나머지는 기록 칸에 줌
+        private void FitToScreen()
+        {
+            Rectangle area = Screen.FromControl(this).WorkingArea;
+            MinimumSize = new Size(Math.Min(MinimumSize.Width, area.Width), Math.Min(MinimumSize.Height, area.Height));
+            if (Height > area.Height) { Height = area.Height; Top = area.Top; }
+            if (Width > area.Width) { Width = area.Width; Left = area.Left; }
+            if (Top < area.Top) Top = area.Top;
+
+            int logMin = LogicalToDeviceUnits(150);
+            try
+            {
+                _split.Panel1MinSize = LogicalToDeviceUnits(120);
+                _split.Panel2MinSize = logMin;
+            }
+            catch (Exception) { }   // 창이 아주 작으면 최소 크기를 못 맞춤: 기본값 유지
+            if (_settingsPanel == null)
+                return;
+            int wanted = _settingsPanel.GetPreferredSize(new Size(_split.Panel1.ClientSize.Width, 0)).Height + 2;
+            int max = _split.ClientSize.Height - _split.Panel2MinSize - _split.SplitterWidth;
+            if (max > _split.Panel1MinSize)
+            {
+                try { _split.SplitterDistance = Math.Max(_split.Panel1MinSize, Math.Min(wanted, max)); }
+                catch (Exception) { }
+            }
         }
 
         private static TableLayoutPanel NewGrid()
@@ -659,6 +704,9 @@ namespace UnityCamcorderGui
             var fail = FailLine.Match(line);
             if (fail.Success)
                 _failure = fail.Groups[1].Value.Trim();
+            var reason = CameraListLine.Match(line);
+            if (reason.Success && reason.Groups[1].Value.Trim().Length > 0)
+                _cameraListReason = reason.Groups[1].Value.Trim();
         }
 
         private void OnCameraLoaderExited(Process process)
@@ -700,13 +748,14 @@ namespace UnityCamcorderGui
             }
             else if (code == 2)
             {
-                SetStatus("이 앱은 카메라를 골라 찍을 수 없습니다 (IL2CPP 빌드 등). 화면 전체로 녹화됩니다.", Color.DarkOrange);
+                SetStatus("카메라를 골라 찍을 수 없습니다: " + (_cameraListReason ?? "IL2CPP 빌드 등") + " 화면 전체로 녹화됩니다.", Color.DarkOrange);
             }
             else
             {
                 SetStatus("카메라 목록을 불러오지 못했습니다" + (_failure != null ? ": " + _failure : $" (종료 코드 {code})"), Color.Firebrick);
             }
             _failure = null;
+            _cameraListReason = null;
             UpdateCameraHint();
             UpdateEnabledState();
             if (_closeAfterExit) Close();
@@ -912,8 +961,17 @@ namespace UnityCamcorderGui
 
         private void SetStatus(string text, Color color)
         {
+            WrapLabels();
             _statusLabel.Text = text;
             _statusLabel.ForeColor = color;
+        }
+
+        // 긴 상태 문구가 옆으로 늘어나지 않고 줄바꿈되도록 설정 칸 폭에 맞춤
+        private void WrapLabels()
+        {
+            int width = Math.Max(LogicalToDeviceUnits(200), _split.Panel1.ClientSize.Width - LogicalToDeviceUnits(40));
+            _statusLabel.MaximumSize = new Size(width, 0);
+            _detailLabel.MaximumSize = new Size(width, 0);
         }
 
         private void AppendLog(string line)

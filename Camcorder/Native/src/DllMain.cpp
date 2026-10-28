@@ -180,19 +180,19 @@ namespace Camcorder
             SetLastErrorText("유니티 창(UnityWndClass)을 찾을 수 없습니다");
             return 0;
         }
-        Log("유니티 창 발견: HWND=%p, 메인 스레드=%lu", g_unityWindow, g_mainThreadId);
+        Log("유니티 창 발견: HWND=%p, 창 스레드=%lu", g_unityWindow, g_mainThreadId);
 
         if (MH_Initialize() != MH_OK)
         {
             SetLastErrorText("MinHook 초기화 실패");
             return 0;
         }
-        if (!InstallMainThreadHooks())
-            return 0;
         if (!InstallPresentHooks())
             return 0;
+        //메인 스레드 틱 등록. 실패해도(IL2CPP 등) Present 훅이 화면을 실시간으로 캡처하므로 계속 진행
+        InstallMainThreadTick();
         AddStatus(ST_HOOKED);
-        Log("후킹 완료");
+        Log("후킹 완료 (메인 스레드 틱: %s)", g_tickRegistered ? "등록됨" : "없음, 화면 실시간 캡처");
         return 0;
     }
 }
