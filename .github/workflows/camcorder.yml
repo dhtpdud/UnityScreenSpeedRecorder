@@ -1,6 +1,6 @@
 name: UnityCamcorder 빌드
 
-# 외부 캠코더(주입 DLL + 주입기 + C# 캠코더 + 창 프로그램)를 Windows에서 빌드해 배포용 zip으로 묶습니다.
+# 캠코더(BepInEx 플러그인 + C# 캠코더 + 창 프로그램)를 Windows에서 빌드해 배포용 zip으로 묶습니다.
 on:
   push:
     branches: ["**"]
@@ -8,6 +8,12 @@ on:
       - "Camcorder/**"
       - ".github/workflows/camcorder.yml"
   workflow_dispatch:
+
+env:
+  # 앱 폴더에 설치해 줄 BepInEx 5 (공식 배포본을 받아 해시를 확인한 뒤 그대로 넣음)
+  BEPINEX_VERSION: "5.4.23.6"
+  BEPINEX_SHA256_X64: "6c57a714a892efb4e9e1fef63d608a3391f30ec984031c465404e4ee381a0755"
+  BEPINEX_SHA256_X86: "a4024dafaca5d3784097e34b3c2921415030c0b461e52f30053ed8914be9622d"
 
 jobs:
   build:
@@ -20,53 +26,70 @@ jobs:
         with:
           dotnet-version: "8.0.x"
 
-      # --- 네이티브(DLL + 주입기)를 MSVC로 x64/x86 각각 빌드 ---
-      - name: 네이티브 x64 빌드
-        run: |
-          cmake -S Camcorder/Native -B Camcorder/Native/build-x64 -A x64
-          cmake --build Camcorder/Native/build-x64 --config Release
+      # --- BepInEx 플러그인 (앱 안에서 도는 부분, .NET 3.5) ---
+      # 배포용은 지원하는 가장 오래된 Unity 2018.1.9 참조로 빌드
+      - name: 플러그인 빌드
+        run: dotnet build Camcorder/Plugin/UnityCamcorderPlugin.csproj -c Release -o Camcorder/build/plugin
 
-      - name: 네이티브 x86 빌드
-        run: |
-          cmake -S Camcorder/Native -B Camcorder/Native/build-x86 -A Win32
-          cmake --build Camcorder/Native/build-x86 --config Release
-
-      # Inject.exe가 재현 가능한지 확인: 다른 폴더에서 한 번 더 빌드해 같은 파일인지 비교.
-      # 빌드마다 새 파일이 되면 백신이 매번 처음 보는 파일로 다시 탐지하고, 받아 둔 오탐 해제도 소용없어짐
-      - name: Inject.exe 재현 가능 빌드 확인
+      # 쓰는 유니티 API가 2018.1부터 최신(6000.6)까지 모두 있는지: 여러 버전의 유니티 참조로 컴파일해 봄 (결과물은 버림)
+      # Unity 2022.3 이후 참조 DLL은 netstandard 2.1 기반이라 UnityApiCheck로 그 틀에서 컴파일
+      - name: 플러그인 유니티 버전 호환 확인
         shell: pwsh
         run: |
-          cmake -S Camcorder/Native -B Camcorder/Native/build-x64-check -A x64
-          cmake --build Camcorder/Native/build-x64-check --config Release --target Inject
-          $a = (Get-FileHash Camcorder/Native/build-x64/Release/Inject.exe -Algorithm SHA256).Hash
-          $b = (Get-FileHash Camcorder/Native/build-x64-check/Release/Inject.exe -Algorithm SHA256).Hash
-          Write-Host "Inject.exe x64 SHA256: $a / $b"
-          if ($a -ne $b) { throw "Inject.exe가 빌드마다 달라집니다. 빌드 시각 등 비결정적 요소를 확인하세요." }
+          $net35 = @("2018.4.36", "2019.4.40", "2020.3.48", "2021.3.45")
+          $netstd = @("2022.3.62", "6000.0.58", "6000.6.6")
+          foreach ($v in $net35) {
+            Write-Host "=== Unity $v"
+            dotnet build Camcorder/Plugin/UnityCamcorderPlugin.csproj -c Release "-p:UnityVersion=$v" -o "Camcorder/build/check/$v" -warnaserror
+            if ($LASTEXITCODE -ne 0) { throw "Unity $v 참조로 플러그인 컴파일 실패" }
+          }
+          foreach ($v in $netstd) {
+            Write-Host "=== Unity $v"
+            dotnet build Camcorder/Plugin/UnityCamcorderPlugin.csproj -c Release -p:UnityApiCheck=true "-p:UnityVersion=$v" -o "Camcorder/build/check/$v" -warnaserror
+            if ($LASTEXITCODE -ne 0) { throw "Unity $v 참조로 플러그인 컴파일 실패" }
+          }
 
       # --- C# 캠코더 (단일 파일, 자체 포함) ---
       - name: 캠코더 publish
         run: dotnet publish Camcorder/Controller/UnityCamcorder.csproj -c Release -o Camcorder/dist
 
-      # --- 창 프로그램 (UnityCamcorder.exe를 실행·관리하는 GUI, .NET Framework 4.8) ---
+      # --- 창 프로그램 (UnityCamcorder.exe를 실행·관리하고 플러그인을 설치하는 GUI, .NET Framework 4.8) ---
       - name: 창 프로그램 publish
         run: dotnet publish Camcorder/Gui/UnityCamcorderGui.csproj -c Release -o Camcorder/dist
+
+      # --- BepInEx 5 공식 배포본 (앱 폴더에 처음 한 번 설치) ---
+      - name: BepInEx 받기
+        shell: pwsh
+        run: |
+          $dir = "Camcorder/dist/bepinex"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $v = $env:BEPINEX_VERSION
+          foreach ($arch in @("x64", "x86")) {
+            $name = "BepInEx_win_${arch}_$v.zip"
+            $path = Join-Path $dir $name
+            Invoke-WebRequest -Uri "https://github.com/BepInEx/BepInEx/releases/download/v$v/$name" -OutFile $path
+            $expected = if ($arch -eq "x64") { $env:BEPINEX_SHA256_X64 } else { $env:BEPINEX_SHA256_X86 }
+            $actual = (Get-FileHash $path -Algorithm SHA256).Hash.ToLower()
+            Write-Host "$name SHA256: $actual"
+            if ($actual -ne $expected) { throw "$name 해시가 다릅니다 (기대 $expected)" }
+          }
+          # BepInEx는 LGPL-2.1: 라이선스 원문을 함께 넣음
+          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/BepInEx/BepInEx/v$v/LICENSE" -OutFile (Join-Path $dir "LICENSE-BepInEx.txt")
 
       # --- 배포 폴더 구성 ---
       - name: 배포 폴더 구성
         shell: pwsh
         run: |
           $dist = "Camcorder/dist"
-          New-Item -ItemType Directory -Force -Path "$dist/x64","$dist/x86" | Out-Null
-          Copy-Item Camcorder/Native/build-x64/Release/UnityCamcorderHook.dll "$dist/x64/"
-          Copy-Item Camcorder/Native/build-x64/Release/Inject.exe "$dist/x64/"
-          Copy-Item Camcorder/Native/build-x86/Release/UnityCamcorderHook.dll "$dist/x86/"
-          Copy-Item Camcorder/Native/build-x86/Release/Inject.exe "$dist/x86/"
+          New-Item -ItemType Directory -Force -Path "$dist/plugin" | Out-Null
+          Copy-Item Camcorder/build/plugin/UnityCamcorderPlugin.dll "$dist/plugin/"
           Copy-Item Camcorder/README.md "$dist/"
+          Copy-Item Camcorder/THIRD-PARTY-NOTICES.md "$dist/"
           Copy-Item Camcorder/camcorder.sample.json "$dist/camcorder.json"
           Remove-Item "$dist/*.pdb" -ErrorAction SilentlyContinue
 
-      # --- (선택) 코드 서명: 저장소 시크릿에 인증서가 있을 때만 모든 실행 파일·DLL에 서명 ---
-      # Authenticode 서명은 ML/휴리스틱 오탐과 SmartScreen 경고를 줄이는 가장 효과적인 정식 방법입니다.
+      # --- (선택) 코드 서명: 저장소 시크릿에 인증서가 있을 때만 우리 실행 파일·DLL에 서명 ---
+      # BepInEx는 zip 안에 공식 배포본 그대로 두므로 서명 대상이 아닙니다.
       # 서명 인증서(.pfx)를 base64로 인코딩해 SIGN_PFX_BASE64 시크릿에, 비밀번호를 SIGN_PFX_PASSWORD 시크릿에
       # 넣으면 빌드마다 자동으로 서명됩니다. 시크릿이 없으면 이 단계는 그냥 건너뜁니다(빌드는 그대로 성공).
       - name: 코드 서명 (인증서 시크릿이 있을 때만)
@@ -78,8 +101,6 @@ jobs:
         run: |
           if ([string]::IsNullOrWhiteSpace($env:SIGN_PFX_BASE64)) {
             Write-Host "서명 인증서 시크릿(SIGN_PFX_BASE64)이 없어 코드 서명을 건너뜁니다."
-            Write-Host "백신 오탐을 크게 줄이려면 코드 서명 인증서(.pfx)를 base64로 SIGN_PFX_BASE64 시크릿에,"
-            Write-Host "비밀번호를 SIGN_PFX_PASSWORD 시크릿에 등록하세요. (설정 > Secrets and variables > Actions)"
             exit 0
           }
           $signtool = Get-ChildItem -Path "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
@@ -99,13 +120,13 @@ jobs:
           }
           Remove-Item $pfx -Force
 
-      # 파일 해시 목록 (서명 뒤에 계산). 백신 오탐 신고 때 쓰고, 업데이트 후에도 Inject.exe가 같은 파일인지 확인용
+      # 파일 해시 목록 (서명 뒤에 계산)
       - name: 해시 목록
         shell: pwsh
         run: |
           $dist = "Camcorder/dist"
           $root = (Resolve-Path $dist).Path
-          Get-ChildItem $dist -Recurse -File -Include *.exe,*.dll |
+          Get-ChildItem $dist -Recurse -File -Include *.exe,*.dll,*.zip |
             ForEach-Object { "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.FullName.Substring($root.Length + 1).Replace('\','/') } |
             Sort-Object | Set-Content "$dist/checksums.txt" -Encoding utf8
           Get-Content "$dist/checksums.txt"

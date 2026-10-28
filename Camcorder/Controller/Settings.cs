@@ -34,13 +34,17 @@ public sealed class Settings
     // --- 촬영 ---
     public int SpeedLimit { get; set; } = 0;                  // 최대 배속 제한(0 = 하드웨어 최대). 참고용
     public int WarmupFrames { get; set; } = 2;               // 시간 제어 적용 직후 버릴 프레임 수
-    public int SlotCount { get; set; } = 8;                   // 링 버퍼 슬롯 수 (많을수록 여유 메모리 더 씀)
+    public int SlotCount { get; set; } = 16;                  // 링 버퍼(공유 메모리) 슬롯 수. 카메라가 여러 대면 카메라당 4개 이상으로 자동으로 늘림
+    public int BufferMemoryMB { get; set; } = 512;            // ffmpeg에 넘기기 전 프레임을 쌓아 둘 메모리 (카메라 전체 합계)
 
     // --- 안정성 ---
     public int FreezeTimeoutMs { get; set; } = 10000;         // 이 시간 동안 새 프레임이 없으면 멈춘 것으로 보고 마무리
     public bool CloseTargetWhenDone { get; set; } = true;     // 녹화가 끝나면 대상 앱을 종료
 
-    [JsonIgnore] public string? GraphicsApiOverride { get; set; }  // "d3d11"/"d3d12" (현재는 자동 감지만 사용)
+    // --- 플러그인 ---
+    // 앱을 실행해서 녹화할 때 앱 폴더에 BepInEx + 캠코더 플러그인이 없거나 다른 버전이면 자동으로 설치
+    public bool AutoInstallPlugin { get; set; } = true;
+    public int PluginConnectTimeoutMs { get; set; } = 90000;  // 앱 안의 플러그인이 연결될 때까지 기다리는 시간 (앱 로딩 포함)
 
     public static Settings Load(string path)
     {
@@ -75,5 +79,7 @@ public sealed class Settings
             throw new ArgumentException($"촬영 카메라는 최대 {SharedControl.MaxStreams}대까지 고를 수 있습니다.");
         if (SlotCount is < 2 or > SharedControl.MaxSlots)
             throw new ArgumentException($"SlotCount는 2~{SharedControl.MaxSlots} 사이여야 합니다.");
+        if (BufferMemoryMB < 0)
+            throw new ArgumentException("BufferMemoryMB는 0 이상이어야 합니다.");
     }
 }

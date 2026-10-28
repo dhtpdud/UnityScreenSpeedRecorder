@@ -16,16 +16,24 @@
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <!-- 파일 속성에 표시되는 정보 (제조사·설명이 비어 있으면 백신 오탐이 늘어남) -->
-    <Version>1.1.0</Version>
-    <ApplicationIcon>..\Native\res\app.ico</ApplicationIcon>
+    <Version>2.1.0</Version>
+    <ApplicationIcon>..\res\app.ico</ApplicationIcon>
     <Company>UnityCamcorder (github.com/dhtpdud/UnityScreenSpeedRecorder)</Company>
     <Product>UnityCamcorder - Unity app speed recorder</Product>
     <Copyright>Copyright (C) dhtpdud</Copyright>
-    <Description>UnityCamcorder window: settings and start/stop for the UnityCamcorder recorder</Description>
+    <Description>UnityCamcorder window: installs the plugin into a Unity app, settings and start/stop for the recorder</Description>
   </PropertyGroup>
 
   <ItemGroup>
     <Reference Include="System.Runtime.Serialization" />
+    <!-- BepInEx zip 풀기 -->
+    <Reference Include="System.IO.Compression" />
+    <Reference Include="System.IO.Compression.FileSystem" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 캠코더(UnityCamcorder.exe)와 같이 쓰는 BepInEx/플러그인 설치 -->
+    <Compile Include="..\Shared\PluginInstaller.cs" Link="Shared\PluginInstaller.cs" />
   </ItemGroup>
 
 </Project>

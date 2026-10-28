@@ -15,7 +15,7 @@ public sealed class FfmpegEncoder : IDisposable
     public string EncoderName { get; private set; } = "";
     public long WrittenFrames { get; private set; }
     public bool HasExited => _process?.HasExited ?? true;
-    public int ExitCode => _process?.ExitCode ?? -1;
+    public int ExitCode { get { try { return _process?.ExitCode ?? -1; } catch (InvalidOperationException) { return -1; } } }
 
     private FfmpegEncoder(string ffmpegPath) => _ffmpegPath = ffmpegPath;
 
@@ -104,6 +104,12 @@ public sealed class FfmpegEncoder : IDisposable
             return false;
         }
         return _process.ExitCode == 0;
+    }
+
+    // 입력을 받지 않고 멈춘 ffmpeg를 강제로 끝냄 (막혀 있던 쓰기가 풀림)
+    public void Kill()
+    {
+        try { if (_process != null && !_process.HasExited) _process.Kill(); } catch { }
     }
 
     public string RecentLog()

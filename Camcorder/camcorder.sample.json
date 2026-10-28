@@ -22,12 +22,17 @@
   "ExtraFfmpegArgs": "",
   "FfmpegPath": "",
 
-  "//capture": "촬영 동작",
+  "//capture": "촬영 동작. SlotCount = 앱과 주고받는 공유 메모리 슬롯 수, BufferMemoryMB = ffmpeg에 넘기기 전 프레임을 쌓아 둘 메모리(카메라 합계)",
   "SpeedLimit": 0,
   "WarmupFrames": 2,
-  "SlotCount": 8,
+  "SlotCount": 16,
+  "BufferMemoryMB": 512,
 
   "//stability": "안정성",
   "FreezeTimeoutMs": 10000,
-  "CloseTargetWhenDone": true
+  "CloseTargetWhenDone": true,
+
+  "//plugin": "앱을 실행해서 녹화할 때 앱 폴더에 BepInEx 5 + 캠코더 플러그인이 없거나 다른 버전이면 자동으로 설치",
+  "AutoInstallPlugin": true,
+  "PluginConnectTimeoutMs": 90000
 }

@@ -3,7 +3,7 @@ using System.Runtime.InteropServices;
 
 namespace UnityCamcorder;
 
-// 대상 유니티 앱을 실행하거나 이미 떠 있는 것을 찾고, 비트 수를 판별해 맞는 주입기로 DLL을 넣습니다.
+// 대상 유니티 앱을 실행하거나 이미 떠 있는 것을 찾습니다. (캡처는 앱 안의 BepInEx 플러그인이 하므로 넣는 것은 없음)
 public sealed class TargetProcess
 {
     public Process Process { get; }
@@ -50,28 +50,12 @@ public sealed class TargetProcess
         return new TargetProcess(process, is64);
     }
 
-    // DLL 파일이 로드되어 공유 메모리를 열 때까지, 맞는 주입기로 주입합니다.
-    public void Inject(string toolDir)
-    {
-        string arch = Is64Bit ? "x64" : "x86";
-        string injector = Path.Combine(toolDir, arch, "Inject.exe");
-        string dll = Path.Combine(toolDir, arch, "UnityCamcorderHook.dll");
-        if (!File.Exists(injector) || !File.Exists(dll))
-            throw new FileNotFoundException($"주입기 또는 DLL이 없습니다: {injector} / {dll}");
+    // 대상 exe 전체 경로 (플러그인 설치 확인용). 알 수 없으면 null
+    public string? ImagePath => Install.PluginInstaller.ImagePath(Process.Id);
 
-        var psi = new ProcessStartInfo(injector)
-        {
-            UseShellExecute = false,
-            RedirectStandardError = true,
-            CreateNoWindow = true,
-        };
-        psi.ArgumentList.Add(Pid.ToString());
-        psi.ArgumentList.Add(Path.GetFullPath(dll));
-        var inj = Process.Start(psi)!;
-        string err = inj.StandardError.ReadToEnd();
-        inj.WaitForExit();
-        if (inj.ExitCode != 0)
-            throw new InvalidOperationException($"DLL 주입 실패 (코드 {inj.ExitCode}): {err.Trim()}");
+    public DateTime? StartTime
+    {
+        get { try { return Process.StartTime; } catch { return null; } }
     }
 
     // 대상이 응답하는지 (멈춤 감지 보조용)

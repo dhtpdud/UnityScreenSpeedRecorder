@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- 대상 앱 안의 Mono에서 돌아가는 BepInEx 5 플러그인.
+         Unity 2018.1의 기본 스크립트 런타임(.NET 3.5)에서도 로드되도록 net35로 빌드합니다. (4.x 런타임 앱에서도 그대로 동작) -->
+    <TargetFramework>net35</TargetFramework>
+    <!-- API 확인용 빌드(-p:UnityApiCheck=true): Unity 2022.3 이후 참조 DLL은 netstandard 2.1 기반이라 그 틀로 컴파일만 해 봄 -->
+    <TargetFramework Condition="'$(UnityApiCheck)' == 'true'">netstandard2.1</TargetFramework>
+    <AssetTargetFallback Condition="'$(UnityApiCheck)' == 'true'">$(AssetTargetFallback);net35</AssetTargetFallback>
+    <AssemblyName>UnityCamcorderPlugin</AssemblyName>
+    <RootNamespace>UnityCamcorder.Plugin</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Deterministic>true</Deterministic>
+    <DebugType>none</DebugType>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <!-- 플러그인은 대상 앱이 이미 가진 유니티/BepInEx DLL을 쓰므로 참조 DLL을 출력 폴더에 복사하지 않음 -->
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <!-- 유니티 참조 어셈블리는 BepInEx NuGet 피드에 있음 -->
+    <RestoreAdditionalProjectSources>https://nuget.bepinex.dev/v3/index.json</RestoreAdditionalProjectSources>
+    <!-- 컴파일에 쓸 유니티 참조 버전. 배포용은 지원하는 가장 오래된 2018.1.9로 빌드하고,
+         CI가 최신 버전(-p:UnityVersion=6000.6.6 등)으로도 컴파일해 쓰는 API가 모든 버전에 있는지 확인합니다 -->
+    <UnityVersion Condition="'$(UnityVersion)' == ''">2018.1.9</UnityVersion>
+    <!-- 파일 속성 정보 -->
+    <Version>2.1.0</Version>
+    <Company>UnityCamcorder (github.com/dhtpdud/UnityScreenSpeedRecorder)</Company>
+    <Product>UnityCamcorder - Unity app speed recorder</Product>
+    <Copyright>Copyright (C) dhtpdud</Copyright>
+    <Description>UnityCamcorder BepInEx plugin: speed recording and per-camera capture inside the Unity app</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 컴파일에만 씀. 실제로는 앱 폴더의 BepInEx와 유니티 DLL이 로드됨 -->
+    <PackageReference Include="BepInEx.Core" Version="5.4.21" IncludeAssets="compile" PrivateAssets="all" />
+    <!-- 버전마다 자리가 바뀐 API(AsyncGPUReadback, URP 카메라 데이터 등)는 리플렉션으로 찾음 -->
+    <PackageReference Include="UnityEngine.Modules" Version="$(UnityVersion)" IncludeAssets="compile" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies.net35" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\Shared\CamcorderProtocol.cs" Link="Shared\CamcorderProtocol.cs" />
+  </ItemGroup>
+
+</Project>
