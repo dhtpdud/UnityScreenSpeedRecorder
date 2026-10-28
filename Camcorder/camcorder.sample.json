@@ -22,10 +22,11 @@
   "ExtraFfmpegArgs": "",
   "FfmpegPath": "",
 
-  "//capture": "촬영 동작",
+  "//capture": "촬영 동작. SlotCount = 앱과 주고받는 공유 메모리 슬롯 수, BufferMemoryMB = ffmpeg에 넘기기 전 프레임을 쌓아 둘 메모리(카메라 합계)",
   "SpeedLimit": 0,
   "WarmupFrames": 2,
-  "SlotCount": 8,
+  "SlotCount": 16,
+  "BufferMemoryMB": 512,
 
   "//stability": "안정성",
   "FreezeTimeoutMs": 10000,

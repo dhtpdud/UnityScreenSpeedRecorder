@@ -14,7 +14,7 @@
     <PublishSingleFile>true</PublishSingleFile>
     <InvariantGlobalization>true</InvariantGlobalization>
     <!-- 파일 속성에 표시되는 정보 (제조사·설명이 비어 있으면 백신 오탐이 늘어남) -->
-    <Version>2.0.0</Version>
+    <Version>2.1.0</Version>
     <ApplicationIcon>..\res\app.ico</ApplicationIcon>
     <Company>UnityCamcorder (github.com/dhtpdud/UnityScreenSpeedRecorder)</Company>
     <Product>UnityCamcorder - Unity app speed recorder</Product>

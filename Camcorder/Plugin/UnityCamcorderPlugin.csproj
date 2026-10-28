@@ -23,7 +23,7 @@
          CI가 최신 버전(-p:UnityVersion=6000.6.6 등)으로도 컴파일해 쓰는 API가 모든 버전에 있는지 확인합니다 -->
     <UnityVersion Condition="'$(UnityVersion)' == ''">2018.1.9</UnityVersion>
     <!-- 파일 속성 정보 -->
-    <Version>2.0.0</Version>
+    <Version>2.1.0</Version>
     <Company>UnityCamcorder (github.com/dhtpdud/UnityScreenSpeedRecorder)</Company>
     <Product>UnityCamcorder - Unity app speed recorder</Product>
     <Copyright>Copyright (C) dhtpdud</Copyright>

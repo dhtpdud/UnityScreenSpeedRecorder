@@ -12,9 +12,9 @@ namespace UnityCamcorder.Protocol
     public static class Shared
     {
         public const uint Magic = 0x524D4355u;   // 'UCMR'
-        // 3: 메인 스레드 틱을 유니티 이벤트로 (주입 DLL), 4: BepInEx 플러그인
+        // 3: 메인 스레드 틱을 유니티 이벤트로 (주입 DLL), 4: BepInEx 플러그인, 5: 속도 진단(플러그인이 기다린 시간)
         // magic(0), version(4), payloadVersion(60) 세 자리는 버전이 달라도 서로 알아볼 수 있도록 앞으로도 옮기지 않습니다.
-        public const int Version = 4;
+        public const int Version = 5;
 
         public const int MaxSlots = 64;
         public const int MaxCameras = 64;
@@ -24,7 +24,8 @@ namespace UnityCamcorder.Protocol
         public const int CameraNameBytes = 104;
         public const int RuntimeInfoBytes = 256;
         public const int LastErrorBytes = 512;
-        public const int ControlSize = Offsets.Cameras + CameraStride * MaxCameras;   // 12232
+        public const int StatsBytes = 64;
+        public const int ControlSize = Offsets.Stats + StatsBytes;   // 12296
 
         public const int CmdIdle = 0;
         public const int CmdRecord = 1;
@@ -80,6 +81,14 @@ namespace UnityCamcorder.Protocol
         public const int StreamCount = 3972;        // 캠코더 → 플러그인: 촬영할 카메라 수 (0이면 화면 전체를 한 영상으로)
         public const int StreamCameraIds = 3976;    // int32 x MaxStreams, 촬영할 카메라 instanceId (stream 번호 순)
         public const int Cameras = 4040;            // CameraStride x MaxCameras
+
+        // 속도 진단 (플러그인 → 캠코더). 녹화 중 앱 메인 스레드가 캠코더 때문에 쓴 시간의 누적값(int64, 마이크로초).
+        // 캠코더가 1초마다 차이를 보고 배속이 안 나오는 원인(인코딩/GPU 읽기/앱 자체)을 알려 줍니다.
+        public const int Stats = Cameras + Shared.CameraStride * Shared.MaxCameras;   // 12232
+        public const int StatSlotWaitUs = Stats;           // 빈 슬롯을 기다린 시간 (캠코더·ffmpeg가 못 따라옴)
+        public const int StatGpuWaitUs = Stats + 8;        // GPU 읽기가 끝나길 기다린 시간 (동기 읽기 포함)
+        public const int StatCopyUs = Stats + 16;          // 프레임을 공유 메모리로 복사한 시간
+        public const int StatFrameLimitResets = Stats + 24;   // int32, 앱이 녹화 중 프레임 제한/수직 동기화를 다시 건 횟수 (플러그인이 다시 풂)
 
         // 슬롯 하나 안 (48바이트)
         public const int SlotWidth = 0;

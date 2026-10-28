@@ -23,9 +23,9 @@ public sealed class RecordingSession
     {
         public string Label = "";
         public string OutputPath = "";
-        public FfmpegEncoder? Encoder;
+        public FrameWriter? Writer;   // ffmpeg + 전용 쓰기 스레드 (첫 프레임에서 시작)
         public long Received;      // 받은 프레임 (워밍업 포함)
-        public long Written;       // 영상에 쓴 프레임
+        public long Written;       // 영상에 넣은 프레임
         public int Width, Height;
         public bool Failed;
     }
@@ -293,6 +293,9 @@ public sealed class RecordingSession
             }
         }
 
+        // 카메라가 여러 대면 링 버퍼를 카메라당 4슬롯 이상으로 (한 카메라가 슬롯을 다 차지해 다른 카메라가 기다리지 않도록)
+        shared.SlotCount = Math.Clamp(Math.Max(_settings.SlotCount, 4 * streams.Count), 2, SharedControl.MaxSlots);
+
         int session = shared.SessionId + 1;
         shared.OpenFrameRing(session);
 
@@ -368,13 +371,21 @@ public sealed class RecordingSession
     {
         int totalFrames = _settings.ResolveTotalFrames();
         int warmup = Math.Max(0, _settings.WarmupFrames);
-        var buffer = new byte[shared.SlotSize];
 
         var freezeWatch = Stopwatch.StartNew();
         long lastWrite = shared.WriteCount;
-        var progress = Stopwatch.StartNew();
+        var speed = new SpeedMeter(shared, streams, _settings.Fps, totalFrames);
 
-        long MinWritten() => streams.Where(s => !s.Failed).Select(s => s.Written).DefaultIfEmpty(0).Min();
+        // 쓰기 스레드에서 ffmpeg가 먼저 죽은 스트림을 찾아 한 번만 알림
+        bool CheckFailed(StreamState stream)
+        {
+            if (!stream.Failed && stream.Writer is { Failed: true })
+            {
+                Log($"ffmpeg가 프레임을 받지 못했습니다 ({stream.Label}). 최근 로그:\n{stream.Writer.Encoder.RecentLog()}");
+                stream.Failed = true;
+            }
+            return stream.Failed;
+        }
 
         try
         {
@@ -392,60 +403,80 @@ public sealed class RecordingSession
                     int fmt = shared.SlotFormat(slot);
                     int streamIndex = shared.SlotStream(slot);
                     long dataSize = shared.SlotDataSize(slot);
-                    if (dataSize > buffer.Length) dataSize = buffer.Length;
-                    shared.ReadSlot(slot, buffer, (int)dataSize);
 
-                    // 소비 완료 표시 (DLL이 슬롯을 재사용하도록)
-                    shared.ReadCount = frameIndex + 1;
-                    shared.SignalSlotFree();
+                    StreamState? stream = null;
+                    if (streamIndex >= 0 && streamIndex < streams.Count && !streams[streamIndex].Failed)
+                    {
+                        stream = streams[streamIndex];
+                        // 시간 제어 적용 직후의 불안정한 프레임과 목표를 넘은 프레임은 버림
+                        if (stream.Received++ < warmup || (totalFrames > 0 && stream.Written >= totalFrames))
+                            stream = null;
+                    }
+                    if (stream == null)
+                    {
+                        ReleaseSlot(shared, frameIndex);
+                        continue;
+                    }
 
-                    if (streamIndex < 0 || streamIndex >= streams.Count)
-                        continue;
-                    var stream = streams[streamIndex];
-                    if (stream.Failed)
-                        continue;
-
-                    // 시간 제어 적용 직후의 불안정한 프레임은 버림
-                    if (stream.Received++ < warmup)
-                        continue;
-                    if (totalFrames > 0 && stream.Written >= totalFrames)
-                        continue;
-
-                    // 첫 유효 프레임에서 ffmpeg 시작
-                    if (stream.Encoder == null)
+                    // 첫 유효 프레임에서 ffmpeg와 전용 쓰기 스레드 시작
+                    if (stream.Writer == null)
                     {
                         stream.Width = w; stream.Height = h;
                         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(stream.OutputPath))!);
-                        stream.Encoder = FfmpegEncoder.Start(_settings, w, h, fmt, stream.OutputPath);
-                        Log($"인코딩 시작: {stream.Label} — {stream.Encoder.EncoderName}, {w}x{h}");
+                        var encoder = FfmpegEncoder.Start(_settings, w, h, fmt, stream.OutputPath);
+                        int frameBytes = (int)Math.Max(dataSize, (long)w * h * 4);
+                        int queue = QueueCapacity(frameBytes, streams.Count);
+                        stream.Writer = new FrameWriter(encoder, frameBytes, queue, stream.Label);
+                        Log($"인코딩 시작: {stream.Label} — {encoder.EncoderName}, {w}x{h} (ffmpeg 대기 줄 {queue}프레임)");
+                        speed.Begin();
                     }
                     else if (w != stream.Width || h != stream.Height)
                     {
+                        ReleaseSlot(shared, frameIndex);
                         Log("캡처 중 해상도가 바뀌어 녹화를 마칩니다.");
                         goto finish;
                     }
 
-                    if (!stream.Encoder.WriteFrame(buffer, (int)dataSize))
+                    // 슬롯을 우리 버퍼로 복사한 즉시 비워 플러그인이 다음 프레임을 쓸 수 있게 함
+                    byte[] data = stream.Writer.RentBuffer();
+                    int length = (int)Math.Min(dataSize, data.Length);
+                    shared.ReadSlot(slot, data, length);
+                    ReleaseSlot(shared, frameIndex);
+
+                    // ffmpeg 쪽 줄이 꽉 찼으면 자리가 날 때까지 기다림 (그동안 슬롯이 차서 앱도 기다림 = 프레임을 버리지 않음)
+                    bool queued;
+                    while (!(queued = stream.Writer.TryEnqueue(data, length, 100)))
                     {
-                        Log($"ffmpeg가 프레임을 받지 못했습니다 ({stream.Label}). 최근 로그:\n{stream.Encoder.RecentLog()}");
-                        stream.Failed = true;
+                        if (stream.Writer.Failed || target.HasExited || _stop.IsCancellationRequested)
+                            break;
+                    }
+                    if (queued)
+                        stream.Written++;
+                    else
+                        stream.Writer.ReturnBuffer(data);
+
+                    if (CheckFailed(stream))
+                    {
                         if (streams.All(s => s.Failed))
                             goto finish;
                         continue;
                     }
-                    stream.Written++;
+                    if (!queued)
+                        break;   // 중지 요청 또는 대상 종료: 아래에서 마무리
 
-                    if (progress.ElapsedMilliseconds > 1000)
-                    {
-                        Log($"진행: {MinWritten()}" + (totalFrames > 0 ? $"/{totalFrames}" : "") + " 프레임");
-                        progress.Restart();
-                    }
+                    speed.Report();
                     if (totalFrames > 0 && streams.All(s => s.Failed || s.Written >= totalFrames))
                     {
                         Log("목표 프레임 수 도달.");
                         goto finish;
                     }
                 }
+
+                foreach (var stream in streams)
+                    CheckFailed(stream);
+                if (streams.All(s => s.Failed))
+                    goto finish;
+                speed.Report();
 
                 if (_stop.IsCancellationRequested)
                 {
@@ -476,25 +507,149 @@ public sealed class RecordingSession
         }
         finally
         {
-            // 남은 프레임을 더 받지 않도록 먼저 촬영을 멈추고 ffmpeg를 닫음
+            // 남은 프레임을 더 받지 않도록 먼저 촬영을 멈춤. 줄에 남은 프레임은 쓰기 스레드가 마저 넘긴 뒤 ffmpeg를 닫음
             shared.Command = SharedControl.CmdIdle;
+            speed.LogSummary();
             foreach (var stream in streams)
             {
-                var encoder = stream.Encoder;
-                if (encoder == null)
+                var writer = stream.Writer;
+                if (writer == null)
                     continue;
-                bool ok = encoder.Finish();
+                bool ok = writer.Finish();
+                var encoder = writer.Encoder;
                 if (ok)
                     Log($"영상 저장 완료: {Path.GetFullPath(stream.OutputPath)} ({encoder.EncoderName}, {encoder.WrittenFrames}프레임)");
                 else
                     Log($"ffmpeg 종료 코드 {encoder.ExitCode}. 영상이 불완전할 수 있습니다 ({stream.Label}). 로그:\n{encoder.RecentLog()}");
-                encoder.Dispose();
+                writer.Dispose();
             }
         }
 
-        if (streams.All(s => s.Encoder == null))
+        if (streams.All(s => s.Writer == null))
             return Fail("캡처된 프레임이 없습니다.");
         return 0;
+    }
+
+    // 소비 완료 표시 (플러그인이 슬롯을 다시 쓰도록)
+    private static void ReleaseSlot(SharedControl shared, long frameIndex)
+    {
+        shared.ReadCount = frameIndex + 1;
+        shared.SignalSlotFree();
+    }
+
+    // ffmpeg에 넘기기 전에 쌓아 둘 프레임 수: 메모리 한도(BufferMemoryMB)를 카메라 수로 나눔
+    private int QueueCapacity(int frameBytes, int streamCount)
+    {
+        long budget = (long)_settings.BufferMemoryMB << 20;
+        long perFrame = Math.Max(1L, (long)frameBytes * Math.Max(1, streamCount));
+        return (int)Math.Clamp(budget / perFrame, 2L, 64L);
+    }
+
+    // 배속과 병목 진단. 1초마다 실제 촬영 속도(초당 프레임, 배속)와 앱이 캠코더 때문에 기다린 시간의 비율을 진행 줄에 붙이고,
+    // 녹화가 끝나면 전체 평균과 무엇이 속도를 막았는지 한 번 정리합니다.
+    // 앱이 기다린 시간(플러그인이 잰 값): 인코딩 = 빈 슬롯 대기(캠코더·ffmpeg가 못 따라옴), GPU 읽기 = GPU 읽기 완료 대기, 복사 = 공유 메모리로 복사.
+    // 셋 다 작으면 나머지 시간은 앱이 한 프레임을 만드는 데(게임 로직·렌더링) 쓴 것입니다.
+    private sealed class SpeedMeter
+    {
+        private readonly SharedControl _shared;
+        private readonly List<StreamState> _streams;
+        private readonly int _fps;
+        private readonly int _totalFrames;
+        private readonly bool _screenMode;   // 화면 읽기(동기) 방식인지 (녹화를 멈춘 뒤엔 플래그가 지워지므로 시작할 때 기억)
+        private Snapshot _start, _last;
+        private bool _started;
+
+        private sealed record Snapshot(long Ticks, long Frames, long SlotWaitUs, long GpuWaitUs, long CopyUs, long[] Busy);
+
+        private sealed record Rates(double Seconds, long Frames, double Fps, double Speed, double SlotWait, double GpuWait, double Copy, double FfmpegBusy);
+
+        public SpeedMeter(SharedControl shared, List<StreamState> streams, int fps, int totalFrames)
+        {
+            _shared = shared;
+            _streams = streams;
+            _fps = fps;
+            _totalFrames = totalFrames;
+            _screenMode = shared.StatusFlags.HasFlag(Status.ScreenCapture);
+            _start = _last = Take();
+        }
+
+        private long MinWritten() => _streams.Where(s => !s.Failed).Select(s => s.Written).DefaultIfEmpty(0).Min();
+
+        private Snapshot Take() => new(Stopwatch.GetTimestamp(), MinWritten(), _shared.StatSlotWaitUs, _shared.StatGpuWaitUs, _shared.StatCopyUs,
+                                       _streams.Select(s => s.Writer?.BusyTicks ?? 0).ToArray());
+
+        // 첫 프레임을 영상에 넣을 때부터 잼
+        public void Begin()
+        {
+            if (_started) return;
+            _started = true;
+            _start = _last = Take();
+        }
+
+        private static Rates Between(Snapshot a, Snapshot b, int fps)
+        {
+            double seconds = Math.Max(1e-6, (b.Ticks - a.Ticks) / (double)Stopwatch.Frequency);
+            long frames = b.Frames - a.Frames;
+            double busy = 0;
+            for (int i = 0; i < b.Busy.Length && i < a.Busy.Length; i++)
+                busy = Math.Max(busy, (b.Busy[i] - a.Busy[i]) / (double)Stopwatch.Frequency / seconds);
+            double perSecond = frames / seconds;
+            return new Rates(seconds, frames, perSecond, perSecond / fps,
+                (b.SlotWaitUs - a.SlotWaitUs) / 1e6 / seconds, (b.GpuWaitUs - a.GpuWaitUs) / 1e6 / seconds,
+                (b.CopyUs - a.CopyUs) / 1e6 / seconds, busy);
+        }
+
+        private static string Pct(double fraction) =>
+            ((int)Math.Round(Math.Clamp(fraction, 0, 1) * 100)).ToString(CultureInfo.InvariantCulture) + "%";
+
+        private static string Num(double value, string format) => value.ToString(format, CultureInfo.InvariantCulture);
+
+        // 1초마다 진행 줄 (창 프로그램이 "진행: N/M 프레임"을 읽음)
+        public void Report()
+        {
+            if (!_started || Stopwatch.GetTimestamp() - _last.Ticks < Stopwatch.Frequency)
+                return;
+            var now = Take();
+            var r = Between(_last, now, _fps);
+            _last = now;
+            Log($"진행: {now.Frames}" + (_totalFrames > 0 ? $"/{_totalFrames}" : "") + " 프레임" +
+                $" · 초당 {Num(r.Fps, "0")}프레임 ({Num(r.Speed, "0.0#")}배속)" +
+                $" · 앱 대기: 인코딩 {Pct(r.SlotWait)}, GPU 읽기 {Pct(r.GpuWait)}, 복사 {Pct(r.Copy)} · ffmpeg 쓰기 {Pct(r.FfmpegBusy)}");
+        }
+
+        // 녹화를 마칠 때 한 번: 평균 배속과 병목
+        public void LogSummary()
+        {
+            if (!_started)
+                return;
+            var end = Take();
+            var r = Between(_start, end, _fps);
+            if (r.Frames <= 0)
+                return;
+            double frameMs = r.Seconds * 1000 / r.Frames;
+            Log($"속도 요약: {r.Frames}프레임을 {Num(r.Seconds, "0.0")}초에 촬영 = 초당 {Num(r.Fps, "0.#")}프레임, {Num(r.Speed, "0.0#")}배속 " +
+                $"(영상 {_fps}fps 기준, 프레임당 {Num(frameMs, "0.#")}ms)");
+            Log($"  앱 대기: 인코딩 {Pct(r.SlotWait)}, GPU 읽기 {Pct(r.GpuWait)}, 복사 {Pct(r.Copy)} · ffmpeg 쓰기 {Pct(r.FfmpegBusy)}");
+
+            string encoder = _streams.Select(s => s.Writer?.Encoder.EncoderName).FirstOrDefault(n => n != null) ?? "";
+            const double Heavy = 0.25;
+            if (r.SlotWait >= Heavy && r.SlotWait >= r.GpuWait && r.SlotWait >= r.Copy)
+                Log(r.FfmpegBusy >= 0.8
+                    ? $"  → 병목: 인코딩. ffmpeg({encoder})가 프레임을 받아 인코딩하는 속도가 한계라 앱이 기다렸습니다. " +
+                      "영상 크기(앱 창 크기)를 줄이거나 촬영 카메라 수를 줄이면 빨라집니다. libx264이면 GPU 인코더를 쓸 수 있는지 확인하세요."
+                    : "  → 병목: 캠코더가 프레임을 넘기는 쪽. ffmpeg는 여유가 있는데 프레임 전달이 밀렸습니다 (PC 메모리/CPU 여유 부족).");
+            else if (r.GpuWait >= Heavy && r.GpuWait >= r.Copy)
+                Log("  → 병목: GPU 읽기. GPU에서 프레임을 읽어 오길 기다린 시간이 깁니다. 영상 크기를 줄이면 빨라집니다." +
+                    (_screenMode ? " (화면 읽기 방식은 동기 읽기라 느립니다)" : ""));
+            else if (r.Copy >= Heavy)
+                Log("  → 병목: 프레임 복사. 영상 크기가 크거나 카메라가 많아 복사가 오래 걸립니다.");
+            else
+                Log($"  → 캠코더 쪽 대기는 적습니다. 시간 대부분(프레임당 약 {Num(frameMs * Math.Max(0, 1 - r.SlotWait - r.GpuWait - r.Copy), "0.#")}ms)을 " +
+                    "앱이 한 프레임을 만드는 데(게임 로직·렌더링) 썼으므로, 이 PC에서 이 앱이 낼 수 있는 속도에 가깝습니다.");
+            int resets = _shared.StatFrameLimitResets;
+            if (resets > 0)
+                Log($"  참고: 앱이 녹화 중에 프레임 제한/수직 동기화를 {resets}번 다시 걸어 플러그인이 다시 풀었습니다.");
+        }
     }
 
     // 조건이 참이 되거나 타임아웃/중단될 때까지 폴링

@@ -11,6 +11,8 @@ namespace UnityCamcorder.Plugin
     internal static class TimeControl
     {
         private static bool s_applied;
+        private static int s_fps;
+        private static bool s_enforceLogged;
         private static int s_savedCaptureFramerate;
         private static int s_savedTargetFrameRate = -1;
         private static int s_savedVSyncCount = 1;
@@ -46,8 +48,31 @@ namespace UnityCamcorder.Plugin
                 return false;
             }
             s_applied = true;
+            s_fps = fps;
+            s_enforceLogged = false;
             PluginLog.Info("배속 촬영 적용: 프레임당 1/" + fps + "초, vSync 끔, 프레임 제한 해제");
             return true;
+        }
+
+        // 녹화 중 매 프레임: 앱이 프레임 제한·수직 동기화·captureFramerate를 다시 걸었으면(장면 전환, 품질 설정 변경 등)
+        // 다시 풉니다. 그대로 두면 앱이 실시간 속도로 묶여 배속이 안 나옴. 앱이 바꾼 값은 녹화가 끝나면 그 값으로 되돌림
+        public static void Enforce()
+        {
+            if (!s_applied)
+                return;
+            int capture = Time.captureFramerate, vSync = QualitySettings.vSyncCount, target = Application.targetFrameRate;
+            if (capture == s_fps && vSync == 0 && target == -1)
+                return;
+            if (!s_enforceLogged)
+            {
+                s_enforceLogged = true;
+                PluginLog.Warn("앱이 녹화 중에 속도 설정을 바꿔서 다시 풉니다 (captureFramerate=" + capture + ", vSyncCount=" + vSync +
+                               ", targetFrameRate=" + target + "). 이런 설정이 남아 있으면 배속이 나오지 않습니다.");
+            }
+            if (capture != s_fps) { s_savedCaptureFramerate = capture; Time.captureFramerate = s_fps; }
+            if (vSync != 0) { s_savedVSyncCount = vSync; QualitySettings.vSyncCount = 0; }
+            if (target != -1) { s_savedTargetFrameRate = target; Application.targetFrameRate = -1; }
+            PluginStats.FrameLimitResets++;
         }
 
         // 녹화가 끝나거나 캠코더가 죽으면 원래대로

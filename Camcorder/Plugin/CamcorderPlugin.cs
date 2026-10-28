@@ -15,7 +15,7 @@ namespace UnityCamcorder.Plugin
     {
         public const string Guid = "com.dhtpdud.unitycamcorder";
         public const string Name = "UnityCamcorder";
-        public const string Version = "2.0.0";
+        public const string Version = "2.1.0";
 
         private void Awake()
         {
@@ -184,6 +184,7 @@ namespace UnityCamcorder.Plugin
                 {
                     // 새 녹화 세션: 배속 적용 → 카메라 촬영 준비 → 처리 완료 표시
                     s_lastHandledSession = session;
+                    PluginStats.Reset();
                     s_capture.Stop();
                     string error;
                     if (TimeControl.Apply(control.ReadInt(Offsets.Fps), out error))
@@ -201,7 +202,9 @@ namespace UnityCamcorder.Plugin
                     System.Threading.Thread.MemoryBarrier();
                     control.WriteInt(Offsets.AppliedSessionId, session);
                 }
+                TimeControl.Enforce();
                 s_capture.Tick();
+                PluginStats.Publish(control);
             }
             else if (s_lastHandledSession != -1)
             {
@@ -233,6 +236,36 @@ namespace UnityCamcorder.Plugin
             }
             s_control = null;
             s_capture = null;
+        }
+    }
+
+    // 속도 진단: 녹화 중 메인 스레드가 캠코더 때문에 기다리거나 복사한 시간 (메인 스레드에서만 더함)
+    // 캠코더가 1초마다 읽어 배속이 안 나올 때 어디가 병목인지 알려 줍니다.
+    internal static class PluginStats
+    {
+        public static long SlotWaitTicks, GpuWaitTicks, CopyTicks;
+        public static int FrameLimitResets;
+
+        public static long Now() { return System.Diagnostics.Stopwatch.GetTimestamp(); }
+
+        public static void Reset()
+        {
+            SlotWaitTicks = GpuWaitTicks = CopyTicks = 0;
+            FrameLimitResets = 0;
+        }
+
+        public static void Publish(ControlBlock control)
+        {
+            control.WriteLong(Offsets.StatSlotWaitUs, Microseconds(SlotWaitTicks));
+            control.WriteLong(Offsets.StatGpuWaitUs, Microseconds(GpuWaitTicks));
+            control.WriteLong(Offsets.StatCopyUs, Microseconds(CopyTicks));
+            control.WriteInt(Offsets.StatFrameLimitResets, FrameLimitResets);
+        }
+
+        private static long Microseconds(long ticks)
+        {
+            return ticks / System.Diagnostics.Stopwatch.Frequency * 1000000
+                 + ticks % System.Diagnostics.Stopwatch.Frequency * 1000000 / System.Diagnostics.Stopwatch.Frequency;
         }
     }
 

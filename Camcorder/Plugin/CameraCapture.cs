@@ -18,7 +18,9 @@ namespace UnityCamcorder.Plugin
     // 모든 함수는 유니티 메인 스레드에서만 부릅니다.
     internal sealed unsafe class CameraCapture
     {
-        private const int MaxInFlight = 3;   // 스트림마다 동시에 진행할 읽기 요청 수
+        // 스트림마다 동시에 진행할 읽기 요청 수. 배속 촬영에선 프레임이 빨리 돌아 GPU 읽기가 몇 프레임 늦게 끝나므로,
+        // 너무 적으면 매 프레임 가장 오래된 요청을 기다리느라(GPU 동기화) 앱이 느려짐 (원본 프로젝트는 최대 64)
+        private const int MaxInFlight = 8;
 
         private sealed class Stream
         {
@@ -440,7 +442,9 @@ namespace UnityCamcorder.Plugin
                 while (stream.Pending.Count >= MaxInFlight)
                 {
                     object oldest = stream.Pending.Dequeue();
+                    long waitStart = PluginStats.Now();
                     _async.WaitDone(oldest);
+                    PluginStats.GpuWaitTicks += PluginStats.Now() - waitStart;
                     Deliver(stream, oldest);
                 }
                 if (!_control.IsRecordRequested())
@@ -462,11 +466,13 @@ namespace UnityCamcorder.Plugin
             int width = _screenTexture.width, height = _screenTexture.height;
             if (Screen.width != width || Screen.height != height)
                 return;   // 창 크기가 바뀜: 캠코더가 해상도 변화를 보고 마무리하도록 이전 크기 그대로 두고 건너뜀
+            long readStart = PluginStats.Now();
             RenderTexture previous = RenderTexture.active;
             RenderTexture.active = null;
             _screenTexture.ReadPixels(new Rect(0, 0, width, height), 0, 0, false);
             RenderTexture.active = previous;
             Color32[] pixels = _screenTexture.GetPixels32();
+            PluginStats.GpuWaitTicks += PluginStats.Now() - readStart;
             if (pixels.Length < width * height)
                 return;
             fixed (Color32* p = pixels)
@@ -495,11 +501,13 @@ namespace UnityCamcorder.Plugin
         {
             if (stream.Source == null || stream.ReadTexture == null)
                 return;
+            long readStart = PluginStats.Now();
             RenderTexture previous = RenderTexture.active;
             RenderTexture.active = stream.Source;
             stream.ReadTexture.ReadPixels(new Rect(0, 0, stream.Width, stream.Height), 0, 0, false);
             RenderTexture.active = previous;
             Color32[] pixels = stream.ReadTexture.GetPixels32();
+            PluginStats.GpuWaitTicks += PluginStats.Now() - readStart;
             if (pixels.Length < stream.Width * stream.Height)
             {
                 if (!stream.ErrorLogged)

@@ -72,17 +72,28 @@ namespace UnityCamcorder.Plugin
             capacity = 0;
             if (_base == null)
                 return false;
-            while (_control.ReadLong(Offsets.WriteCount) - _control.ReadLong(Offsets.ReadCount) >= _slotCount)
+            long waitStart = 0;
+            try
             {
-                if (!wait)
-                    return false;
-                // 녹화가 끝났거나 캠코더가 죽었으면 포기
-                if (!_control.IsRecordRequested() || _control.ReadInt(Offsets.SessionId) != _session)
-                    return false;
-                if (_control.SlotFreeEvent != IntPtr.Zero)
-                    Native.WaitForSingleObject(_control.SlotFreeEvent, 100);
-                else
-                    System.Threading.Thread.Sleep(1);
+                while (_control.ReadLong(Offsets.WriteCount) - _control.ReadLong(Offsets.ReadCount) >= _slotCount)
+                {
+                    if (!wait)
+                        return false;
+                    // 녹화가 끝났거나 캠코더가 죽었으면 포기
+                    if (!_control.IsRecordRequested() || _control.ReadInt(Offsets.SessionId) != _session)
+                        return false;
+                    if (waitStart == 0)
+                        waitStart = PluginStats.Now();
+                    if (_control.SlotFreeEvent != IntPtr.Zero)
+                        Native.WaitForSingleObject(_control.SlotFreeEvent, 100);
+                    else
+                        System.Threading.Thread.Sleep(1);
+                }
+            }
+            finally
+            {
+                if (waitStart != 0)
+                    PluginStats.SlotWaitTicks += PluginStats.Now() - waitStart;
             }
             slot = (int)(_control.ReadLong(Offsets.WriteCount) % _slotCount);
             dest = _base + (long)slot * _slotSize;
@@ -119,9 +130,11 @@ namespace UnityCamcorder.Plugin
             long capacity;
             if (!BeginWrite(out slot, out dest, out capacity, wait) || frameBytes > capacity)
                 return false;
+            long copyStart = PluginStats.Now();
             var row = new UIntPtr((ulong)rowBytes);
             for (int y = 0; y < height; y++)
                 Native.CopyMemory((IntPtr)(dest + y * rowBytes), (IntPtr)(source + (height - 1 - y) * rowBytes), row);
+            PluginStats.CopyTicks += PluginStats.Now() - copyStart;
             EndWrite(slot, width, height, Shared.FormatRgba8, 4, frameBytes, stream);
             return true;
         }

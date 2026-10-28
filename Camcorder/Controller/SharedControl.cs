@@ -27,7 +27,13 @@ public sealed class SharedControl : IDisposable
     private readonly EventWaitHandle _frameReady;
     private readonly EventWaitHandle _slotFree;
 
-    public int SlotCount { get; private set; }
+    // 녹화 세션을 열기 전에만 바꿈 (플러그인은 링 버퍼를 열 때 이 값을 읽음)
+    private int _slotCount;
+    public int SlotCount
+    {
+        get => _slotCount;
+        set { _slotCount = value; _control.Write(Offsets.SlotCount, value); }
+    }
     private long _slotSize;
     public long SlotSize
     {
@@ -39,7 +45,7 @@ public sealed class SharedControl : IDisposable
     public SharedControl(uint targetPid, int slotCount)
     {
         TargetPid = targetPid;
-        SlotCount = slotCount;
+        _slotCount = slotCount;
 
         // 플러그인이 이미 연결돼 있던 앱(카메라 목록을 먼저 불러온 경우 등)이면 플러그인이 열어 둔 제어 블록을 그대로 다시 씀
         _controlFile = MemoryMappedFile.CreateOrOpen(Shared.ControlName(targetPid), Shared.ControlSize, MemoryMappedFileAccess.ReadWrite);
@@ -80,6 +86,12 @@ public sealed class SharedControl : IDisposable
     public int AppliedSessionId => _control.ReadInt32(Offsets.AppliedSessionId);
     public long WriteCount => _control.ReadInt64(Offsets.WriteCount);
     public long ReadCount { get => _control.ReadInt64(Offsets.ReadCount); set => _control.Write(Offsets.ReadCount, value); }
+
+    // 속도 진단: 플러그인이 녹화 중 기다리거나 복사한 시간 (마이크로초, 누적)
+    public long StatSlotWaitUs => _control.ReadInt64(Offsets.StatSlotWaitUs);
+    public long StatGpuWaitUs => _control.ReadInt64(Offsets.StatGpuWaitUs);
+    public long StatCopyUs => _control.ReadInt64(Offsets.StatCopyUs);
+    public int StatFrameLimitResets => _control.ReadInt32(Offsets.StatFrameLimitResets);
 
     public string RuntimeInfo => ReadUtf8(Offsets.RuntimeInfo, Shared.RuntimeInfoBytes);
     public string LastError => ReadUtf8(Offsets.LastError, Shared.LastErrorBytes);
