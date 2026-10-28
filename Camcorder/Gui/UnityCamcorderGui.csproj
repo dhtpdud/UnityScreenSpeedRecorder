@@ -15,6 +15,12 @@
     <!-- 리눅스/맥에서도 컴파일 확인이 가능하도록 -->
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <!-- 파일 속성에 표시되는 정보 (제조사·설명이 비어 있으면 백신 오탐이 늘어남) -->
+    <Version>1.1.0</Version>
+    <Company>UnityCamcorder (github.com/dhtpdud/UnityScreenSpeedRecorder)</Company>
+    <Product>UnityCamcorder - Unity app speed recorder</Product>
+    <Copyright>Copyright (C) dhtpdud</Copyright>
+    <Description>UnityCamcorder window: settings and start/stop for the UnityCamcorder recorder</Description>
   </PropertyGroup>
 
   <ItemGroup>

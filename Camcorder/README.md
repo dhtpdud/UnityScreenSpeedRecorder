@@ -136,6 +136,20 @@ UnityCamcorder.exe --pid 12345 --cameras "Main Camera,MinimapCamera" --out "C:\r
 `--list-cameras`는 카메라 목록(이름, `#번호`, 크기)만 보여 주고 앱은 켜 둡니다. `--cameras`에는 이름이나 `#번호`를 쉼표로 적습니다.
 설정 파일에서는 `"Cameras": ["Main Camera", "MinimapCamera"]` 로 적습니다. 결과는 `out_Main Camera.mp4`, `out_MinimapCamera.mp4`처럼 저장됩니다.
 
+## 백신이 Inject.exe를 바이러스로 표시할 때 (오탐)
+
+`Inject.exe`는 사용자가 고른 유니티 앱에 캡처 DLL을 넣는 작은 도구입니다. "다른 프로세스에 DLL을 넣는" 기법(`CreateRemoteThread` + `LoadLibraryW`)이
+악성코드와 같기 때문에, 일부 백신이 동작만 보고 `Trojan:Win32/Wacatac.C!ml`, `Suspicious.low.ml.score` 같은 **일반(휴리스틱/ML) 탐지**를 냅니다.
+이름 끝의 `!ml`, `ml.score`는 머신러닝 추정이라는 뜻이며, 같은 방식을 쓰는 OBS 게임 캡처나 모드 로더도 자주 겪는 문제입니다.
+코드는 모두 이 저장소에 공개되어 있고, 배포 zip은 GitHub Actions가 이 소스로 직접 빌드합니다.
+
+오탐을 줄이기 위해 모든 실행 파일과 DLL에 제조사·제품·설명·버전 정보와 매니페스트(관리자 권한 요구 없음)를 넣었습니다.
+그래도 탐지되면:
+
+1. **Microsoft Defender**: [Microsoft 오탐 신고](https://www.microsoft.com/en-us/wdsi/filesubmission)에 파일을 "Incorrectly detected"로 제출하면 보통 며칠 안에 정의가 고쳐집니다. 다른 백신도 각자 오탐 신고 페이지가 있습니다.
+2. **내 PC에서 바로 쓰기**: Windows 보안 → 바이러스 및 위협 방지 → 설정 관리 → 제외에 캠코더 폴더를 추가합니다. (직접 빌드했거나 이 저장소의 Actions에서 받은 파일에만 하세요.)
+3. **완전한 해결**: 코드 서명 인증서(OV/EV)로 `Inject.exe`, `UnityCamcorderHook.dll`, `UnityCamcorder.exe`, `UnityCamcorderGui.exe`에 서명하면 대부분의 ML 탐지와 SmartScreen 경고가 사라집니다. 인증서는 유료이며, 있으면 `signtool sign /fd sha256 /tr http://timestamp.digicert.com /td sha256 /a <파일>` 로 서명합니다.
+
 ## 알려진 한계
 
 - **IL2CPP 백엔드**: 내보낸 심벌이 없어 외부에서 유니티 API를 안전하게 호출하기 어렵습니다. 이 경우 카메라 선택과 배속 없이 화면을 **실시간**으로 캡처합니다(녹화 자체는 됩니다). Mono 백엔드에서 배속과 카메라 촬영이 동작합니다.
